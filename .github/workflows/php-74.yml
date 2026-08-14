@@ -58,6 +58,18 @@ jobs:
           path: out/
           retention-days: 7
 
+      # A failed build's config.log is the only thing that says WHY, and the
+      # runner deletes the workspace with it. Without this, every question costs
+      # another 40-minute build.
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ matrix.arch }}
+          path: out/debug/
+          retention-days: 7
+          if-no-files-found: warn
+
   publish:
     needs: build
     if: inputs.publish

@@ -63,6 +63,14 @@ export MACOSX_DEPLOYMENT_TARGET="12.0"
 #                    then add them one at a time with CI as the judge.
 EXTS="bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,mysqli,openssl,pcntl,pdo_mysql,pgsql,posix,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
 
+# Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
+# extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
+# them `gd.php` emits a bare `--enable-gd` — which on 7.4 fails configure with
+# "GD build test failed", 40 minutes into the build and with the reason only in
+# config.log. Named explicitly as well as via the suggestion flag, so the set is
+# visible here rather than implied by another project's defaults.
+LIBS="freetype,libjpeg,libwebp,libpng,zlib"
+
 # Extensions WordPress cannot run without. Asserted on the built binary, so a
 # silently-dropped extension fails the build instead of shipping.
 REQUIRED_EXTS="mysqli pdo_mysql curl gd mbstring json xml dom openssl zip sodium"
@@ -111,6 +119,7 @@ say "download sources (--prefer-pre-built keeps this from being ICU-dominated)"
   --with-php="${PHP_VERSION}" \
   --custom-url="php-src:file://$(pwd)/php-src.tar.gz" \
   --for-extensions="$EXTS" \
+  --for-libs="$LIBS" \
   --prefer-pre-built \
   --retry=2 \
   --debug
@@ -122,21 +131,33 @@ say "doctor"
 # comes back as a bare "Command exited with non-zero code: 1" and the actual
 # reason is in config.log, which the runner then throws away. Dump it on the way
 # out so a failing build says WHY on its first attempt rather than its second.
+# Keep the WHOLE log, not a window. Twice now the last-120-lines view showed
+# configure's later probes and not the failure — a tail is the wrong tool when
+# the interesting line is in the middle. The files are uploaded as an artifact by
+# the workflow, so the next question can be answered without another 40-minute
+# round trip.
 dump_config_log() {
-  for f in source/php-src/config.log source/php-src/configure.log; do
+  mkdir -p "$OUT/debug"
+  cp -f source/php-src/config.log "$OUT/debug/" 2>/dev/null || true
+  cp -rf log "$OUT/debug/spc-log" 2>/dev/null || true
+  for f in source/php-src/config.log; do
     [ -f "$f" ] || continue
-    echo "::group::$f (last 120 lines)"
-    tail -120 "$f"
-    echo "::endgroup::"
-    # The line configure itself considers the failure.
-    echo "--- configure error lines ---"
-    grep -nE "^configure: error|error:|not found|No package" "$f" | tail -20 || true
+    # The line configure itself calls the failure, with the context above it —
+    # which is where the real cause lives (a failed link test, a missing lib).
+    n="$(grep -n '^configure: error' "$f" | tail -1 | cut -d: -f1)"
+    if [ -n "$n" ]; then
+      echo "::group::config.log around the failure (line $n)"
+      sed -n "$(( n > 80 ? n - 80 : 1 )),$((n + 5))p" "$f"
+      echo "::endgroup::"
+    fi
+    echo "--- every configure error line ---"
+    grep -nE "^configure: error" "$f" || true
   done
 }
 trap 'rc=$?; [ $rc -ne 0 ] && dump_config_log; exit $rc' EXIT
 
 say "build (cli + fpm)"
-time ./spc build "$EXTS" --build-cli --build-fpm --debug
+time ./spc build "$EXTS" --with-libs="$LIBS" --with-suggested-libs --build-cli --build-fpm --debug
 
 # ─── Gates. Every one of these has a specific way of being wrong. ────────────
 say "gates"
