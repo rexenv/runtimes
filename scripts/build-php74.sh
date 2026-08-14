@@ -102,13 +102,31 @@ say "download sources (--prefer-pre-built keeps this from being ICU-dominated)"
   --custom-url="php-src:file://$(pwd)/php-src.tar.gz" \
   --for-extensions="$EXTS" \
   --prefer-pre-built \
-  --retry=2
+  --retry=2 \
+  --debug
 
 say "doctor"
 ./spc doctor --auto-fix || true
 
+# spc runs ./configure itself and does NOT echo its output — a failed configure
+# comes back as a bare "Command exited with non-zero code: 1" and the actual
+# reason is in config.log, which the runner then throws away. Dump it on the way
+# out so a failing build says WHY on its first attempt rather than its second.
+dump_config_log() {
+  for f in source/php-src/config.log source/php-src/configure.log; do
+    [ -f "$f" ] || continue
+    echo "::group::$f (last 120 lines)"
+    tail -120 "$f"
+    echo "::endgroup::"
+    # The line configure itself considers the failure.
+    echo "--- configure error lines ---"
+    grep -nE "^configure: error|error:|not found|No package" "$f" | tail -20 || true
+  done
+}
+trap 'rc=$?; [ $rc -ne 0 ] && dump_config_log; exit $rc' EXIT
+
 say "build (cli + fpm)"
-time ./spc build "$EXTS" --build-cli --build-fpm
+time ./spc build "$EXTS" --build-cli --build-fpm --debug
 
 # ─── Gates. Every one of these has a specific way of being wrong. ────────────
 say "gates"
