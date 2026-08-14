@@ -1,0 +1,38 @@
+PHP 7.4 ext/gd: the GD build test's conftest must return a value
+
+`PHP_TEST_BUILD` (build/php.m4) is AC_RUN_IFELSE — it compiles, links AND RUNS
+the program. ext/gd/config.m4 hands it `char foobar () {}`: a non-void function
+that falls off the end, which is undefined behaviour in C.
+
+Old compilers let that return garbage harmlessly. clang 16+ emits a trap
+instruction at the end of a non-void function with no return, so the conftest
+dies where it stands:
+
+    ./configure: line 2481: 38377 Illegal instruction: 4  ./conftest
+    configure:36285: $? = 132
+    configure: error: GD build test failed. Please check the config.log for details.
+
+Nothing is wrong with gd, with libpng, or with any of the ~40 libraries on that
+link line — which is what makes the message expensive. It names an extension and
+a "build test", and the failure is neither. It cost two builds and one wrong
+diagnosis before the config.log artifact showed the exit status: 132 is SIGILL,
+and a compile error cannot produce it.
+
+Homebrew's php@7.4 never hits this because the formula carries `fails_with
+:clang` and builds with GCC, where falling off the end stays benign. We build
+with Apple clang, so the source has to be correct rather than lucky.
+
+This is the ONLY occurrence in the tree:
+    grep -rn '() {}' ext/*/config.m4  →  ext/gd/config.m4:176
+
+--- a/ext/gd/config.m4	2026-08-14 22:43:35
++++ b/ext/gd/config.m4	2026-08-14 22:43:35
+@@ -173,7 +173,7 @@
+ 
+     PHP_TEST_BUILD(foobar, [], [
+       AC_MSG_ERROR([GD build test failed. Please check the config.log for details.])
+-    ], [ $GD_SHARED_LIBADD ], [char foobar () {}])
++    ], [ $GD_SHARED_LIBADD ], [char foobar () { return 0; }])
+ 
+   else
+     extra_sources="gd_compat.c"

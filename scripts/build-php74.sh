@@ -128,11 +128,37 @@ grep -q "#define PHP_VERSION \"${PHP_VERSION}\"" "php-src-backports-${SRC_COMMIT
   || { echo "::error::source is not PHP ${PHP_VERSION}"; exit 1; }
 rm -rf "php-src-backports-${SRC_COMMIT}"
 
+# ─── Patch the source ────────────────────────────────────────────────────────
+# The pin is verified against the ORIGINAL bytes above; patches are applied
+# after, on a tarball we repack. That order is the point: the hash still says
+# what upstream shipped, and every change we make to it is a reviewable file in
+# `patches/` rather than an in-place edit nobody can diff. The original tarball
+# — not this one — is what gets mirrored into the release.
+say "patches"
+mkdir -p patched && tar -C patched -xzf php-src.tar.gz
+( cd "patched/php-src-backports-${SRC_COMMIT}"
+  for f in "$GITHUB_WORKSPACE"/patches/*.patch; do
+    [ -f "$f" ] || continue
+    echo "  applying $(basename "$f")"
+    # --forward + no fuzz: a patch that is already applied, or that no longer
+    # matches, is an ERROR. A silently skipped patch would put us straight back
+    # to the failure it exists to fix, 40 minutes later and looking identical.
+    patch -p1 --forward --fuzz=0 < "$f" \
+      || { echo "::error::$(basename "$f") did not apply cleanly"; exit 1; }
+  done
+  # Prove the thing the patch is FOR, not just that patch(1) exited 0.
+  grep -q 'char foobar () { return 0; }' ext/gd/config.m4 \
+    || { echo "::error::the gd conftest still falls off the end"; exit 1; }
+)
+tar -C patched -czf php-src-patched.tar.gz "php-src-backports-${SRC_COMMIT}"
+rm -rf patched
+echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
+
 # ─── Build ───────────────────────────────────────────────────────────────────
 say "download sources (--prefer-pre-built keeps this from being ICU-dominated)"
 ./spc download \
   --with-php="${PHP_VERSION}" \
-  --custom-url="php-src:file://$(pwd)/php-src.tar.gz" \
+  --custom-url="php-src:file://$(pwd)/php-src-patched.tar.gz" \
   --for-extensions="$EXTS" \
   --for-libs="$LIBS" \
   $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \
