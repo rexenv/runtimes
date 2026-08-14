@@ -1,0 +1,44 @@
+PHP 7.4 ext/intl: ask ICU for C++17 when ICU needs it (upstream's own probe)
+
+Taken from php-src PHP-8.3's ext/intl/config.m4, applied to 7.4 because 7.4 is
+end-of-life and never received it.
+
+7.4 hardcodes `PHP_CXX_COMPILE_STDCXX(11, mandatory, PHP_INTL_STDCXX)`. ICU 74+
+headers use C++14/17 in their public API, so compiling intl against a modern ICU
+under C++11 fails in ICU's own headers:
+
+    buildroot/include/unicode/char16ptr.h:271:38:
+      error: no template named 'enable_if_t' in namespace 'std'
+    buildroot/include/unicode/char16ptr.h:271:55:
+      error: no template named 'is_same_v' in namespace 'std'
+    make: *** [ext/intl/intl_convertcpp.lo] Error 1
+
+Setting CXXFLAGS from outside does NOT fix it, which is the part worth knowing:
+PHP_CXX_COMPILE_STDCXX appends its own `-std=` to the intl-specific flag set
+after ours, so `-std=c++11` wins no matter what the environment says. The
+standard has to change where intl chooses it.
+
+Upstream's fix probes ICU rather than hardcoding the newer standard, and the
+probe is kept verbatim: with an older ICU this stays on C++11 exactly as before,
+so the patch cannot break a build that was working.
+
+Verified against php-src PHP-8.3.31 ext/intl/config.m4 (lines 84-91).
+
+--- a/ext/intl/config.m4	2026-08-14 23:07:42
++++ b/ext/intl/config.m4	2026-08-14 23:07:42
+@@ -83,7 +83,14 @@
+     breakiterator/codepointiterator_methods.cpp"
+ 
+   PHP_REQUIRE_CXX()
+-  PHP_CXX_COMPILE_STDCXX(11, mandatory, PHP_INTL_STDCXX)
++  AC_MSG_CHECKING([if intl requires -std=gnu++17])
++  AS_IF([$PKG_CONFIG icu-uc --atleast-version=74],[
++    AC_MSG_RESULT([yes])
++    PHP_CXX_COMPILE_STDCXX(17, mandatory, PHP_INTL_STDCXX)
++  ],[
++    AC_MSG_RESULT([no])
++    PHP_CXX_COMPILE_STDCXX(11, mandatory, PHP_INTL_STDCXX)
++  ])
+   PHP_INTL_CXX_FLAGS="$INTL_COMMON_FLAGS $PHP_INTL_STDCXX $ICU_CXXFLAGS"
+   if test "$ext_shared" = "no"; then
+     PHP_ADD_SOURCES(PHP_EXT_DIR(intl), $PHP_INTL_CXX_SOURCES, $PHP_INTL_CXX_FLAGS)

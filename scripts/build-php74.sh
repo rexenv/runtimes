@@ -91,10 +91,10 @@ esac
 # ext/curl's signatures, which is a bigger diff against a dead branch for the
 # same runtime behaviour.
 export SPC_DEFAULT_C_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=gnu17 -Wno-incompatible-function-pointer-types"
-# ICU >= 75 requires C++17 to COMPILE AGAINST, while 7.4's ext/intl/config.m4
-# asks for C++11 (`PHP_CXX_COMPILE_STDCXX(11, mandatory, …)`). Raising the C++
-# standard is compatible in the direction that matters and costs nothing when
-# spc happens to build an older ICU.
+# NOTE: this does NOT fix intl. `PHP_CXX_COMPILE_STDCXX` appends intl's own
+# `-std=` AFTER the environment's, so `-std=c++11` wins whatever we set here —
+# which is why patches/0002 changes the standard where intl chooses it. Kept
+# because it is still the right default for C++ elsewhere in the tree.
 export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=c++17"
 
 # Extension set. Aims at parity with the static-php.dev "bulk" builds rexenv
@@ -199,6 +199,8 @@ mkdir -p patched && tar -C patched -xzf php-src.tar.gz
     || { echo "::error::PHP_TEST_BUILD still RUNS its conftest — the gd trap is back"; exit 1; }
   grep -q "char foobar(void) { return '\\\\0'; }" ext/gd/config.m4 \
     || { echo "::error::the gd conftest stub was not updated"; exit 1; }
+  grep -q 'atleast-version=74' ext/intl/config.m4 \
+    || { echo "::error::intl still hardcodes C++11 — ICU 74+ headers will not compile"; exit 1; }
 )
 tar -C patched -czf php-src-patched.tar.gz "php-src-backports-${SRC_COMMIT}"
 rm -rf patched
