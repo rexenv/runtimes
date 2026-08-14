@@ -333,7 +333,10 @@ cp licenses/PHP-3.01.txt "$LIC/" 2>/dev/null || \
 found=0
 for d in source/*/; do
   name="$(basename "$d")"
-  for f in LICENSE LICENSE.txt LICENSE.md COPYING COPYING.txt LICENSE-MIT NOTICE; do
+  # libxml2 ships `Copyright`; others use COPYING/LICENSE/LICENCE spellings.
+  # The list grew by one real miss — keep adding rather than lowering the bar.
+  for f in LICENSE LICENSE.txt LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
+           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE; do
     if [ -f "$d$f" ]; then
       cp "$d$f" "$LIC/${name}.${f}"
       found=$((found + 1))
@@ -342,12 +345,23 @@ for d in source/*/; do
   done
 done
 echo "collected $found dependency licence files from $(ls -d source/*/ 2>/dev/null | wc -l | tr -d ' ') sources"
-# A dependency whose licence we could not find is a thing we would be shipping
-# blind. Say which, loudly, rather than discovering it in a takedown.
+
+# A statically linked dependency whose licence we cannot find is one we would be
+# shipping blind, and we are the distributor. This is a build FAILURE, not a
+# warning: a warning in a green build is a warning nobody reads, and the whole
+# point of collecting these from the real sources was to stop the licence set
+# from describing last year's extension list.
+missing=""
 for d in source/*/; do
   name="$(basename "$d")"
-  ls "$LIC/${name}."* >/dev/null 2>&1 || echo "::warning::no licence file found in source/$name"
+  ls "$LIC/${name}."* >/dev/null 2>&1 || missing="$missing $name"
 done
+if [ -n "$missing" ]; then
+  echo "::error::no licence file found for:$missing"
+  echo "::error::we distribute these bytes — find the licence, or add an explicit"
+  echo "::error::exception here saying WHY that source ships without one."
+  exit 1
+fi
 
 # ─── Package ─────────────────────────────────────────────────────────────────
 say "package"
