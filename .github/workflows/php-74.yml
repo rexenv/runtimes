@@ -1,0 +1,140 @@
+name: Build PHP 7.4.33
+
+# Manual only. These artifacts are pinned by hash in rexenv's source, so a build
+# that fires on push would produce releases nobody asked for and tempt someone
+# into re-uploading over a tag — the one thing this repo exists to prevent.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,       arch: aarch64 }
+          - { runner: macos-15-intel, arch: x86_64  }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      # spc itself runs on PHP >= 8.4. Nothing about the HOST php reaches the
+      # artifact — it only executes the builder.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          tools: none
+          coverage: none
+
+      - name: Build
+        run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-7.4.33-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: staged }
+
+      # The immutability contract is a repo SETTING, and a setting nobody checks
+      # is exactly the promise it was meant to replace. Assert it before writing
+      # anything, and refuse to publish if it is off.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh api repos/${{ github.repository }} -q '.immutable_releases // false')" != "true" ]; then
+            echo "::error::immutable releases are OFF for this repo — a published pin could be silently replaced"
+            exit 1
+          fi
+
+      # A tag is never reused. If it exists, this build is asking to overwrite
+      # bytes somebody has already pinned.
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="php-7.4.33-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # `--clobber` is the one flag that could quietly undo everything above.
+      - name: Assert --clobber appears nowhere
+        run: |
+          if grep -rn -- "--clobber" .github/ scripts/; then
+            echo "::error::--clobber is banned in this repo"; exit 1
+          fi
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find staged -type f -name '*.tar.gz' -exec cp -n {} out/ \;
+          cd out
+          # One source mirror is enough; both arches download the same tarball.
+          shasum -a 256 ./*.tar.gz | tee SHA256SUMS
+          for f in *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      # What actually proves origin. The .sha256 files are documentation; the
+      # hash pinned in rexenv's source is the trust root; this is the receipt
+      # that says which workflow, commit and tag produced these bytes.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "out/*.tar.gz"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "PHP 7.4.33 (build ${{ inputs.build_number }})" \
+            --notes "$(cat <<'NOTES'
+Static PHP 7.4.33 for macOS — `php` (cli) and `php-fpm`, arm64 and x86_64.
+
+Built by `.github/workflows/php-74.yml` from
+`shivammathur/php-src-backports@5a576d8` (mirrored in this release as
+`php-src-backports-5a576d8eb53e.tar.gz`), via static-php-cli 2.8.5.
+`MACOSX_DEPLOYMENT_TARGET=11.0`, asserted per artifact.
+
+**This tag is immutable and will never be re-uploaded.** A rebuild is the next
+build number. See the README for why that matters.
+
+Verify origin:
+
+    gh attestation verify php-7.4.33-cli-macos-aarch64.tar.gz --repo rexenv/runtimes
+
+PHP 7.4 has been end-of-life since 28 Nov 2022. It carries no `opcache`
+(static-php-cli cannot build it for 7.4) and OpenSSL 3's legacy provider is off.
+Licences for PHP and every statically linked dependency are in `licenses/`.
+NOTES
+)"

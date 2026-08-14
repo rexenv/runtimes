@@ -1,0 +1,7 @@
+out/
+buildroot/
+downloads/
+source/
+spc
+spc.tar.gz
+*.tar.gz
