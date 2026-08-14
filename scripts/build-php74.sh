@@ -61,7 +61,14 @@ export MACOSX_DEPLOYMENT_TARGET="12.0"
 #   imagick, imap  — the two that historically break a 7.4 build first. Left out
 #                    of the first green build ON PURPOSE: get a working artifact,
 #                    then add them one at a time with CI as the judge.
-EXTS="bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,mysqli,openssl,pcntl,pdo_mysql,pgsql,posix,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
+# NARROWED to the WordPress/Laravel-critical set for the FIRST green build. The
+# wide set (dba, pgsql, redis, soap, xsl, sysv*, gmp, bz2, ftp, calendar, posix,
+# pcntl, readline, shmop) is what the 8.x bulk builds carry and is where this
+# should end up — but every extension drags libraries into one shared LIBS line,
+# and PHP's GD check is a RUN test, so an unrelated library can kill it. Get one
+# artifact that works, then grow the set with CI as the judge. The divergence is
+# recorded in the release notes rather than discovered by a user.
+EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
 
 # Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
 # extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
@@ -143,7 +150,10 @@ dump_config_log() {
   for f in source/php-src/config.log; do
     [ -f "$f" ] || continue
     # The line configure itself calls the failure, with the context above it —
-    # which is where the real cause lives (a failed link test, a missing lib).
+    # which is where the real cause lives. Note several of PHP's checks (GD's
+    # among them) COMPILE, LINK and then RUN a conftest, so "build test failed"
+    # can mean the program was signalled at runtime (`$? = 132` is SIGILL), not
+    # that anything failed to compile. The distinction decides where to look.
     n="$(grep -n '^configure: error' "$f" | tail -1 | cut -d: -f1)"
     if [ -n "$n" ]; then
       echo "::group::config.log around the failure (line $n)"
@@ -157,7 +167,13 @@ dump_config_log() {
 trap 'rc=$?; [ $rc -ne 0 ] && dump_config_log; exit $rc' EXIT
 
 say "build (cli + fpm)"
-time ./spc build "$EXTS" --with-libs="$LIBS" --with-suggested-libs --build-cli --build-fpm --debug
+# --with-suggested-libs is deliberately NOT used. It fixed gd's missing
+# --with-freetype/--with-jpeg/--with-webp, but it also built libavif (PHP 7.4's
+# gd has no avif support at all, so `--with-avif` is meaningless there) and qdbm
+# (dba's suggestion, an ancient library nothing here needs) — and those land in
+# the same LIBS line the GD RUN test links against. Ask for the three libs gd
+# actually needs, by name, instead of taking every suggestion in the graph.
+time ./spc build "$EXTS" --with-libs="$LIBS" --build-cli --build-fpm --debug
 
 # ─── Gates. Every one of these has a specific way of being wrong. ────────────
 say "gates"
