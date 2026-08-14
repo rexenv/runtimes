@@ -62,15 +62,31 @@ jobs:
       # The immutability contract is a repo SETTING, and a setting nobody checks
       # is exactly the promise it was meant to replace. Assert it before writing
       # anything, and refuse to publish if it is off.
+      # Three states, not two. "The API did not tell me" is NOT "it is off" —
+      # reporting the second when the first is true is the same species of
+      # dishonest check this gate exists to prevent. Verified 14 Aug 2026: the
+      # REST repo object does not carry `immutable_releases` for this repo, so
+      # the UNKNOWN branch is the live one until GitHub exposes it.
       - name: Assert immutable releases are enabled
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ "$(gh api repos/${{ github.repository }} -q '.immutable_releases // false')" != "true" ]; then
-            echo "::error::immutable releases are OFF for this repo — a published pin could be silently replaced"
-            exit 1
-          fi
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              echo "::error::Settings → General → Releases → Immutable releases."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases for this repo, so this gate"
+              echo "::error::cannot confirm the setting. CHECK IT BY HAND before publishing:"
+              echo "::error::  https://github.com/${{ github.repository }}/settings → Releases → Immutable releases"
+              echo "::error::Then re-run with IMMUTABLE_ACK=confirmed set as a repository variable."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
 
       # A tag is never reused. If it exists, this build is asking to overwrite
       # bytes somebody has already pinned.

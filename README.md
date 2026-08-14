@@ -24,7 +24,11 @@ means an upstream rebuild rather than tampering. Here, that cannot happen:
 
 - **Releases are immutable** (repo setting, and the workflow asserts it before
   publishing — a setting nobody checks is exactly the promise it was meant to
-  replace).
+  replace). The REST API does not currently report `immutable_releases` for this
+  repo, so the gate distinguishes *off* from *unknown* rather than calling the
+  second the first, and in the unknown case it refuses to publish until a
+  maintainer has checked the setting by hand and set the `IMMUTABLE_ACK`
+  repository variable to `confirmed`.
 - **A tag is never reused.** `php-7.4.33-1`; a rebuild is `php-7.4.33-2`.
 - **`gh release upload --clobber` is banned**, and CI fails if the string appears
   in a workflow.
