@@ -5,8 +5,11 @@ the program. ext/gd/config.m4 hands it `char foobar () {}`: a non-void function
 that falls off the end, which is undefined behaviour in C.
 
 Old compilers let that return garbage harmlessly. clang 16+ emits a trap
-instruction at the end of a non-void function with no return, so the conftest
-dies where it stands:
+instruction at the end of a non-void function with no return.
+
+**THIS PATCH IS CORRECT BUT IT DID NOT FIX OUR FAILURE.** Kept because the code
+is undefined behaviour either way and the -Wreturn-type warning is now gone.
+With it applied, the conftest still dies exactly as before:
 
     ./configure: line 2481: 38377 Illegal instruction: 4  ./conftest
     configure:36285: $? = 132

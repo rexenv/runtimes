@@ -75,7 +75,16 @@ export MACOSX_DEPLOYMENT_TARGET="12.0"
 # and PHP's GD check is a RUN test, so an unrelated library can kill it. Get one
 # artifact that works, then grow the set with CI as the judge. The divergence is
 # recorded in the release notes rather than discovered by a user.
-EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+#
+# gd is OUT of the first build, and that is the one absence worth explaining.
+# PHP's GD check RUNS a conftest whose main() is `foobar(); return 0;`, and it
+# dies with SIGILL — so the trap is in a static initializer of a library the test
+# adds, not in any code PHP compiled. Ruled out by experiment: the wide extension
+# set (run 4), the narrow one (run 5), pre-built dep archives vs every dep built
+# from source (run 6), and the fall-through-conftest UB (run 7, patched — the
+# warning went away and the trap did not). Get an artifact that works, then bring
+# gd back with `DYLD_PRINT_INITIALIZERS=1` to name the library. Tracked as S1.2.
+EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
 
 # Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
 # extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
@@ -83,11 +92,15 @@ EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,o
 # "GD build test failed", 40 minutes into the build and with the reason only in
 # config.log. Named explicitly as well as via the suggestion flag, so the set is
 # visible here rather than implied by another project's defaults.
-LIBS="freetype,libjpeg,libwebp,libpng,zlib"
+# gd's image libs come back with gd (S1.2).
+LIBS="zlib"
 
 # Extensions WordPress cannot run without. Asserted on the built binary, so a
 # silently-dropped extension fails the build instead of shipping.
-REQUIRED_EXTS="mysqli pdo_mysql curl gd mbstring json xml dom openssl zip sodium"
+# gd is deliberately absent from this list AND from EXTS — see above. It is not
+# quietly dropped: a build claiming to be WordPress-ready without it would be the
+# dishonest version of this compromise, so the release notes say so too.
+REQUIRED_EXTS="mysqli pdo_mysql curl mbstring json xml dom openssl zip sodium intl"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
