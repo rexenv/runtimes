@@ -14,6 +14,10 @@ on:
         description: "Publish a release. Off = build + run the gates only (use this first)."
         type: boolean
         default: false
+      prebuilt:
+        description: "Use spc's pre-built dependency archives. Off = build every dep from source (much slower; use to rule them out as a failure cause)."
+        type: boolean
+        default: true
 
 permissions:
   contents: write      # create the release
@@ -50,7 +54,7 @@ jobs:
       - name: Build
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+        run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
 
       - uses: actions/upload-artifact@v4
         with:

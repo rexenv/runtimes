@@ -12,6 +12,13 @@ set -euo pipefail
 
 ARCH="${1:?arch required: aarch64 or x86_64}"
 OUT="${2:?output dir required}"
+# Use spc's pre-built dependency archives, or build every dep from source.
+# A toggle rather than a constant because it is a live HYPOTHESIS: the pre-built
+# archives are produced for the 8.x toolchain, and PHP's GD check RUNS a conftest
+# linked against the whole dep set — a library that traps on load fails it with
+# SIGILL and blames gd. static-php-cli's own 7.4-era CI did not use pre-built
+# deps. Source builds are much slower, so this stays opt-out, not the default.
+PREBUILT="${3:-true}"
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
 PHP_VERSION="7.4.33"
@@ -95,6 +102,7 @@ say "toolchain"
 clang --version | head -2
 xcodebuild -version | head -1 || true
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+echo "pre-built deps: $PREBUILT"
 
 # ─── Fetch spc ───────────────────────────────────────────────────────────────
 say "static-php-cli ${SPC_VERSION} (${ARCH})"
@@ -127,7 +135,7 @@ say "download sources (--prefer-pre-built keeps this from being ICU-dominated)"
   --custom-url="php-src:file://$(pwd)/php-src.tar.gz" \
   --for-extensions="$EXTS" \
   --for-libs="$LIBS" \
-  --prefer-pre-built \
+  $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \
   --retry=2 \
   --debug
 
