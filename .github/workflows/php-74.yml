@@ -41,7 +41,15 @@ jobs:
           tools: none
           coverage: none
 
+      # spc's --prefer-pre-built asks api.github.com which pre-built dep archives
+      # exist, and unauthenticated that is 60 req/hr PER IP — shared across every
+      # job on the runner fleet, so it 403s intermittently and the build dies
+      # before it compiles anything ("no github token found, skip", then
+      # `curl: (56) ... 403`). The job's own token lifts it to 1000/hr and makes
+      # the step deterministic rather than dependent on the neighbours.
       - name: Build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
 
       - uses: actions/upload-artifact@v4

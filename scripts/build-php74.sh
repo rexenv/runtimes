@@ -35,10 +35,20 @@ SRC_COMMIT="5a576d8eb53e44aff3af9259cfd29e599f604471"
 SRC_URL="https://github.com/shivammathur/php-src-backports/archive/${SRC_COMMIT}.tar.gz"
 SRC_SHA256="d82887f2166e8526ea9b1cfd8c5ecf5649718f0b6e341380d333eba8066429a4"
 
-# The oldest macOS these binaries must run on. Exported before EVERY dep build,
-# not just PHP's: one dependency compiled without it produces a silent `minos`
-# bump that only shows up on a user's older Mac.
-export MACOSX_DEPLOYMENT_TARGET="11.0"
+# The oldest macOS these binaries run on. This is **12.0, matching spc's own
+# macOS default and every PHP build rexenv already ships** — measured, not
+# assumed: the cached php 8.1.34 / 8.3.31 / 8.5.8 binaries are all `minos 12.0`.
+#
+# Forcing 11.0 here was the original plan and it is the wrong call: it would make
+# 7.4 the only row with a lower floor, buying nothing, while fighting the
+# builder's default on every dependency. The number is asserted per artifact
+# below, so a runner-image change that moves it is a build failure rather than a
+# discovery on somebody's older Mac.
+#
+# (Separately: rexenv's INSTALL.md claims macOS 11+, and its pinned nginx is
+# `minos 15.0`. That gap is real and is NOT this build's to fix — it is filed in
+# rexenv's docs/TODO.md.)
+export MACOSX_DEPLOYMENT_TARGET="12.0"
 
 # Extension set. Aims at parity with the static-php.dev "bulk" builds rexenv
 # ships for 8.x, so a 7.4 site's `php -m` is not a surprise. Deliberately absent:
