@@ -291,7 +291,11 @@ otool -L "$BIN/php" | grep -q libreadline && { echo "::error::links GPL readline
 
 # 4. Mach-O arch matches the job, and the deployment target survived.
 for f in "$BIN/php" "$BIN/php-fpm"; do
-  file "$f" | grep -q "$ARCH" || { echo "::error::$f is not $ARCH"; exit 1; }
+  # file(1) says "arm64"; our artifact names say "aarch64". Compare against the
+  # TOOLCHAIN spelling (MAC_ARCH), not the filename one — this gate failed a
+  # perfectly good binary once already, which is the failure mode a strict check
+  # is allowed exactly once.
+  file "$f" | grep -q "$MAC_ARCH" || { echo "::error::$f is not $MAC_ARCH: $(file "$f")"; exit 1; }
   MINOS="$(otool -l "$f" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
   [ "$MINOS" = "$MACOSX_DEPLOYMENT_TARGET" ] \
     || { echo "::error::$f minos=$MINOS want $MACOSX_DEPLOYMENT_TARGET"; exit 1; }
