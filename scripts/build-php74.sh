@@ -78,8 +78,24 @@ case "$ARCH" in
   aarch64) MAC_ARCH=arm64 ;;
   *)       MAC_ARCH="$ARCH" ;;
 esac
-export SPC_DEFAULT_C_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=gnu17"
-export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os"
+#
+# `-Wno-incompatible-function-pointer-types` is the second half of the same
+# story. clang 16+ promoted that mismatch from warning to ERROR, and 7.4's
+# ext/curl declares its progress callback with the pre-curl-8 signature
+# (`double` where curl now passes `curl_off_t`). Homebrew's php@7.4 formula
+# passes the same flag, gated on Apple clang >= 1500.
+#
+# It is a real narrowing of safety and worth naming as such: the mismatch it
+# permits is the one PHP 7.4 has always had with modern curl, and the callback
+# is called by curl with the wider type either way. The alternative is patching
+# ext/curl's signatures, which is a bigger diff against a dead branch for the
+# same runtime behaviour.
+export SPC_DEFAULT_C_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=gnu17 -Wno-incompatible-function-pointer-types"
+# ICU >= 75 requires C++17 to COMPILE AGAINST, while 7.4's ext/intl/config.m4
+# asks for C++11 (`PHP_CXX_COMPILE_STDCXX(11, mandatory, …)`). Raising the C++
+# standard is compatible in the direction that matters and costs nothing when
+# spc happens to build an older ICU.
+export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=c++17"
 
 # Extension set. Aims at parity with the static-php.dev "bulk" builds rexenv
 # ships for 8.x, so a 7.4 site's `php -m` is not a surprise. Deliberately absent:
@@ -134,6 +150,7 @@ xcodebuild -version | head -1 || true
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 echo "pre-built deps: $PREBUILT"
 echo "SPC_DEFAULT_C_FLAGS=$SPC_DEFAULT_C_FLAGS"
+echo "SPC_DEFAULT_CXX_FLAGS=$SPC_DEFAULT_CXX_FLAGS"
 
 # ─── Fetch spc ───────────────────────────────────────────────────────────────
 say "static-php-cli ${SPC_VERSION} (${ARCH})"
