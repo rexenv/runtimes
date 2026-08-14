@@ -76,15 +76,12 @@ export MACOSX_DEPLOYMENT_TARGET="12.0"
 # artifact that works, then grow the set with CI as the judge. The divergence is
 # recorded in the release notes rather than discovered by a user.
 #
-# gd is OUT of the first build, and that is the one absence worth explaining.
-# PHP's GD check RUNS a conftest whose main() is `foobar(); return 0;`, and it
-# dies with SIGILL — so the trap is in a static initializer of a library the test
-# adds, not in any code PHP compiled. Ruled out by experiment: the wide extension
-# set (run 4), the narrow one (run 5), pre-built dep archives vs every dep built
-# from source (run 6), and the fall-through-conftest UB (run 7, patched — the
-# warning went away and the trap did not). Get an artifact that works, then bring
-# gd back with `DYLD_PRINT_INITIALIZERS=1` to name the library. Tracked as S1.2.
-EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+# gd is back, via patches/0001 — upstream's own PHP_TEST_BUILD fix. 7.4's macro
+# EXECUTES a probe linked against libpng/webp/jpeg/freetype, one of which traps
+# in a static initializer; by PHP 8.3 upstream had changed it to link-only. Same
+# libraries, one macro apart — which is exactly why static-php-cli builds gd for
+# 8.x and could not for 7.4.
+EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
 
 # Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
 # extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
@@ -92,15 +89,11 @@ EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,iconv,intl,mbstring,mysqli,open
 # "GD build test failed", 40 minutes into the build and with the reason only in
 # config.log. Named explicitly as well as via the suggestion flag, so the set is
 # visible here rather than implied by another project's defaults.
-# gd's image libs come back with gd (S1.2).
-LIBS="zlib"
+LIBS="freetype,libjpeg,libwebp,libpng,zlib"
 
 # Extensions WordPress cannot run without. Asserted on the built binary, so a
 # silently-dropped extension fails the build instead of shipping.
-# gd is deliberately absent from this list AND from EXTS — see above. It is not
-# quietly dropped: a build claiming to be WordPress-ready without it would be the
-# dishonest version of this compromise, so the release notes say so too.
-REQUIRED_EXTS="mysqli pdo_mysql curl mbstring json xml dom openssl zip sodium intl"
+REQUIRED_EXTS="mysqli pdo_mysql curl gd mbstring json xml dom openssl zip sodium intl"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
@@ -160,8 +153,10 @@ mkdir -p patched && tar -C patched -xzf php-src.tar.gz
       || { echo "::error::$(basename "$f") did not apply cleanly"; exit 1; }
   done
   # Prove the thing the patch is FOR, not just that patch(1) exited 0.
-  grep -q 'char foobar () { return 0; }' ext/gd/config.m4 \
-    || { echo "::error::the gd conftest still falls off the end"; exit 1; }
+  grep -q 'AC_LINK_IFELSE' build/php.m4 \
+    || { echo "::error::PHP_TEST_BUILD still RUNS its conftest — the gd trap is back"; exit 1; }
+  grep -q "char foobar(void) { return '\\\\0'; }" ext/gd/config.m4 \
+    || { echo "::error::the gd conftest stub was not updated"; exit 1; }
 )
 tar -C patched -czf php-src-patched.tar.gz "php-src-backports-${SRC_COMMIT}"
 rm -rf patched

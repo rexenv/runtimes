@@ -1,0 +1,59 @@
+PHP 7.4: back-port upstream's PHP_TEST_BUILD fix — LINK the conftest, don't RUN it
+
+This is upstream's own change, taken from php-src PHP-8.3, applied to 7.4 because
+7.4 is end-of-life and never received it.
+
+`PHP_TEST_BUILD` in 7.4 and 8.0 is AC_RUN_IFELSE: it compiles, links AND EXECUTES
+a probe program. ext/gd/config.m4 uses it with `$GD_SHARED_LIBADD`, so configure
+runs a binary linked against libpng, libwebp, libjpeg and freetype. On macOS that
+binary dies before it reaches main:
+
+    ./configure: line 2481: Illegal instruction: 4  ./conftest
+    configure:36285: $? = 132
+    configure: error: GD build test failed. Please check the config.log for details.
+
+132 is SIGILL. A static initializer in one of those libraries traps. Nothing is
+wrong with gd, and the message names the one thing that is innocent — which is
+what made this expensive to find.
+
+By PHP 8.3 upstream had changed the macro to **AC_LINK_IFELSE**: the probe is
+linked and never executed, so a library that cannot survive its own constructor
+in a throwaway conftest no longer blocks the build. That is why static-php-cli
+builds gd for 8.x and could not for 7.4 — the same libraries, one macro apart.
+
+Both hunks are upstream's:
+  * build/php.m4       AC_RUN_IFELSE -> AC_LINK_IFELSE, and a real prototype
+                       (`char $1(void)` / `int main(void)`)
+  * ext/gd/config.m4   `char foobar () {}` -> `char foobar(void) { return '\0'; }`
+                       — the old stub also fell off the end of a non-void
+                       function, which clang 16+ turns into a trap of its own.
+
+Verified against php-src PHP-8.3.31's build/php.m4 and ext/gd/config.m4.
+
+--- a/build/php.m4	2026-08-14 22:51:56
++++ b/build/php.m4	2026-08-14 22:51:56
+@@ -1645,10 +1645,10 @@
+ AC_DEFUN([PHP_TEST_BUILD], [
+   old_LIBS=$LIBS
+   LIBS="$4 $LIBS"
+-  AC_RUN_IFELSE([AC_LANG_SOURCE([[
++  AC_LINK_IFELSE([AC_LANG_SOURCE([[
+     $5
+-    char $1();
+-    int main() {
++    char $1(void);
++    int main(void) {
+       $1();
+       return 0;
+     }
+--- a/ext/gd/config.m4	2026-08-14 22:51:56
++++ b/ext/gd/config.m4	2026-08-14 22:51:56
+@@ -173,7 +173,7 @@
+ 
+     PHP_TEST_BUILD(foobar, [], [
+       AC_MSG_ERROR([GD build test failed. Please check the config.log for details.])
+-    ], [ $GD_SHARED_LIBADD ], [char foobar () {}])
++    ], [ $GD_SHARED_LIBADD ], [char foobar(void) { return '\0'; }])
+ 
+   else
+     extra_sources="gd_compat.c"
