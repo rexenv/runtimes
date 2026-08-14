@@ -57,6 +57,30 @@ SRC_SHA256="d82887f2166e8526ea9b1cfd8c5ecf5649718f0b6e341380d333eba8066429a4"
 # rexenv's docs/TODO.md.)
 export MACOSX_DEPLOYMENT_TARGET="12.0"
 
+# PHP 7.4 contains K&R (old-style) function definitions — ext/bcmath's libbcmath
+# is full of them:
+#
+#     void bc_add (n1, n2, result, scale_min)
+#          bc_num n1, n2, *result;
+#          int scale_min;
+#
+# **C23 removed that syntax**, and the runner's clang now defaults to
+# `-std=gnu23`, so every one becomes `error: unknown type name 'n1'`. Homebrew's
+# php@7.4 formula sets the same flag for the same reason.
+#
+# It goes through SPC_DEFAULT_C_FLAGS rather than CFLAGS because spc composes its
+# own compile flags from that variable and would otherwise drop ours — and
+# because spc's env loader only fills variables that are UNSET
+# (`GlobalEnvManager::init`: `if (getenv($k) === false)`), so exporting it here
+# wins over config/env.ini. The value must therefore repeat spc's own default
+# (`--target=<arch>-apple-darwin -Os`), since we are replacing it, not appending.
+case "$ARCH" in
+  aarch64) MAC_ARCH=arm64 ;;
+  *)       MAC_ARCH="$ARCH" ;;
+esac
+export SPC_DEFAULT_C_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=gnu17"
+export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os"
+
 # Extension set. Aims at parity with the static-php.dev "bulk" builds rexenv
 # ships for 8.x, so a 7.4 site's `php -m` is not a surprise. Deliberately absent:
 #
@@ -109,6 +133,7 @@ clang --version | head -2
 xcodebuild -version | head -1 || true
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 echo "pre-built deps: $PREBUILT"
+echo "SPC_DEFAULT_C_FLAGS=$SPC_DEFAULT_C_FLAGS"
 
 # ─── Fetch spc ───────────────────────────────────────────────────────────────
 say "static-php-cli ${SPC_VERSION} (${ARCH})"
