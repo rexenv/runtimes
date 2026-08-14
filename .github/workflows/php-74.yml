@@ -126,12 +126,34 @@ jobs:
           fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
-      # `--clobber` is the one flag that could quietly undo everything above.
-      - name: Assert --clobber appears nowhere
+      # The one flag that could quietly undo everything above: it lets a release
+      # asset be replaced in place, which is exactly the property this repo exists
+      # to deny.
+      #
+      # Matches the flag being PASSED TO gh, not the bare word — the first version
+      # grepped for the string and failed on its own step, which is a false
+      # positive but a useful one: it proved the check had never actually run
+      # until the first publish. A guard nobody has seen execute is a guard nobody
+      # knows works.
+      - name: Assert no release asset can be replaced in place
         run: |
-          if grep -rn -- "--clobber" .github/ scripts/; then
-            echo "::error::--clobber is banned in this repo"; exit 1
+          # Anchored to the real subcommands, so the guard cannot match its own
+          # prose. Both directions are checked below rather than assumed.
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          # The line below deliberately CONTAINS the hazard, to prove the pattern
+          # still bites. It is excluded by sentinel rather than by a clever
+          # regex, so the exclusion is visible to a reader instead of implied.
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            echo "::error::a rebuild is the NEXT build number, never a re-upload"
+            exit 1
           fi
+          # Prove the pattern still bites: a known-bad line must be caught.
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/spc-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/spc-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/spc-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
 
       - name: Collect
         run: |
