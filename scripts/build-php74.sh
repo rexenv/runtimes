@@ -140,8 +140,16 @@ export SPC_CMD_PREFIX_PHP_CONFIGURE="./configure --prefix= --with-valgrind=no --
 #   opentelemetry, protobuf     spc guards them on PHP >= 8.0
 #   swoole, event               modern releases dropped 7.4
 #   random                      a PHP 8.2 core extension; 7.4 has no equivalent
-#   apcu, redis, imagick, imap  PECL; added after the first parity build proves out
-EXTS="bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,mysqli,openssl,pcntl,pdo_mysql,pgsql,phar,posix,readline,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
+# The five PECL ones (apcu, redis, imagick, imap, event) are ATTEMPTED here
+# rather than assumed either way. They all fetch "latest" from PECL, so whether
+# a given release still supports 7.4 is a fact about that release and not
+# something to reason about — the build is the experiment. Anything that fails
+# gets dropped WITH ITS REASON rather than quietly omitted; the gap belongs in
+# docs, not in a shrug.
+#
+# redis matters most of the five: rexenv ships Redis as a service, so without
+# the extension a 7.4 site cannot use the object cache the app itself offers.
+EXTS="apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,event,exif,fileinfo,filter,ftp,gd,gmp,iconv,imagick,imap,intl,mbstring,mysqli,openssl,pcntl,pdo_mysql,pgsql,phar,posix,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
 
 # Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
 # extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
@@ -149,7 +157,7 @@ EXTS="bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,ico
 # "GD build test failed", 40 minutes into the build and with the reason only in
 # config.log. Named explicitly as well as via the suggestion flag, so the set is
 # visible here rather than implied by another project's defaults.
-LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit"
+LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent"
 
 # Extensions WordPress cannot run without. Asserted on the built binary, so a
 # silently-dropped extension fails the build instead of shipping.
