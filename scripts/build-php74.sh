@@ -115,13 +115,29 @@ export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=c++17"
 # and PHP's GD check is a RUN test, so an unrelated library can kill it. Get one
 # artifact that works, then grow the set with CI as the judge. The divergence is
 # recorded in the release notes rather than discovered by a user.
+# Extension set, aimed at parity with the static-php.dev "bulk" builds rexenv
+# ships for 8.x — because a 7.4 site should not quietly have fewer capabilities
+# than an 8.3 one.
 #
-# gd is back, via patches/0001 — upstream's own PHP_TEST_BUILD fix. 7.4's macro
-# EXECUTES a probe linked against libpng/webp/jpeg/freetype, one of which traps
-# in a static initializer; by PHP 8.3 upstream had changed it to link-only. Same
-# libraries, one macro apart — which is exactly why static-php-cli builds gd for
-# 8.x and could not for 7.4.
-EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,openssl,pdo_mysql,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+# **`phar` is not optional and its absence is not cosmetic.** rexenv runs WP-CLI
+# and Composer as .phar archives THROUGH THE SITE'S PHP, so a build without it
+# cannot perform a single WordPress operation: `wp core download` dies with
+# `Class 'Phar' not found` before it reads a byte of the site. This set once
+# omitted it — narrowed while chasing the gd failure on a hypothesis that turned
+# out wrong, and never widened back — and the gate below did not catch it because
+# the required list did not name it. Both are fixed; see the phar gate.
+#
+# gd works via patches/0001 — upstream's own PHP_TEST_BUILD fix. 7.4's macro
+# EXECUTES a probe linked against libpng/webp/jpeg/freetype; by PHP 8.3 upstream
+# had made it link-only.
+#
+# Still absent, and each for a reason rather than an oversight:
+#   opcache                     spc's static-opcache patch series starts at 8.0
+#   opentelemetry, protobuf     spc guards them on PHP >= 8.0
+#   swoole, event               modern releases dropped 7.4
+#   random                      a PHP 8.2 core extension; 7.4 has no equivalent
+#   apcu, redis, imagick, imap  PECL; added after the first parity build proves out
+EXTS="bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,intl,mbstring,mysqli,openssl,pcntl,pdo_mysql,pgsql,phar,posix,readline,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
 
 # Libraries gd needs before PHP's bundled GD will link at all. spc only builds an
 # extension's SUGGESTED libs when asked (`--with-suggested-libs`), and without
@@ -129,11 +145,13 @@ EXTS="bcmath,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,o
 # "GD build test failed", 40 minutes into the build and with the reason only in
 # config.log. Named explicitly as well as via the suggestion flag, so the set is
 # visible here rather than implied by another project's defaults.
-LIBS="freetype,libjpeg,libwebp,libpng,zlib"
+LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit"
 
 # Extensions WordPress cannot run without. Asserted on the built binary, so a
 # silently-dropped extension fails the build instead of shipping.
-REQUIRED_EXTS="mysqli pdo_mysql curl gd mbstring json xml dom openssl zip sodium intl"
+# phar leads this list deliberately: rexenv's own tooling is phars, so a build
+# without it fails every WordPress action while `php -v` looks perfectly healthy.
+REQUIRED_EXTS="phar mysqli pdo_mysql curl gd mbstring json xml dom openssl zip sodium intl posix"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
@@ -318,6 +336,24 @@ fi
 echo '<?php echo "OK:", PHP_VERSION, ":", (int)extension_loaded("mysqli");' > /tmp/probe.php
 "$BIN/php" /tmp/probe.php | grep -q "OK:${PHP_VERSION}:1" \
   || { echo "::error::the built php cannot run a script with mysqli"; exit 1; }
+
+# 7. THE TOOLS REXENV ACTUALLY RUNS ON THIS PHP. Both WP-CLI and Composer are
+#    .phar archives executed through the SITE'S php, so a build without `phar`
+#    passes every check above and then fails every WordPress action with
+#    `Class 'Phar' not found` — which is exactly what shipped, because the
+#    module list this gate compares against did not name phar. A list of
+#    extensions is a proxy; running the tools is the claim itself.
+say "the tools rexenv runs on this PHP"
+WP_CLI_VERSION="2.12.0"
+COMPOSER_VERSION="2.10.2"
+curl -fSL -o /tmp/wp-cli.phar \
+  "https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar"
+curl -fSL -o /tmp/composer.phar "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"
+"$BIN/php" /tmp/wp-cli.phar --version \
+  || { echo "::error::WP-CLI cannot run on this build — every WordPress action in rexenv is this phar"; exit 1; }
+"$BIN/php" /tmp/composer.phar --version \
+  || { echo "::error::Composer cannot run on this build — the site's PHP is what runs it"; exit 1; }
+rm -f /tmp/wp-cli.phar /tmp/composer.phar
 
 # ─── Licences ────────────────────────────────────────────────────────────────
 # Static linking puts these libraries INSIDE the binary, so their licences travel
