@@ -277,7 +277,20 @@ say "build (cli + fpm)"
 # (dba's suggestion, an ancient library nothing here needs) — and those land in
 # the same LIBS line the GD RUN test links against. Ask for the three libs gd
 # actually needs, by name, instead of taking every suggestion in the graph.
-time ./spc build "$EXTS" --with-libs="$LIBS" --build-cli --build-fpm --debug
+# `-I pcre.jit=0` is BAKED IN, not left to a php.ini we do not ship.
+#
+# PHP 7.4 bundles **PCRE2 10.35 (May 2020)**, which predates sljit's Apple
+# Silicon support; 8.3 bundles 10.42. So on arm64 the JIT allocation always
+# fails — measured identical signed and unsigned, so it is the library, not our
+# codesign. `preg_match` survives (JIT quietly disables) but Composer's Symfony
+# console promotes the warning to an exception and dies outright.
+#
+# **This is invisible to CI**, which is why it is a hardcoded ini rather than a
+# gate: the GitHub runner's OS permits the allocation and a developer's Mac does
+# not, so a build that passes every check here still fails on the machine that
+# matters. The only honest fix is to stop attempting JIT at all. Cost is some
+# regex throughput on a version nobody runs for speed.
+time ./spc build "$EXTS" --with-libs="$LIBS" -I "pcre.jit=0" --build-cli --build-fpm --debug
 
 # ─── Gates. Every one of these has a specific way of being wrong. ────────────
 say "gates"
@@ -354,6 +367,16 @@ curl -fSL -o /tmp/composer.phar "https://getcomposer.org/download/${COMPOSER_VER
 "$BIN/php" /tmp/composer.phar --version \
   || { echo "::error::Composer cannot run on this build — the site's PHP is what runs it"; exit 1; }
 rm -f /tmp/wp-cli.phar /tmp/composer.phar
+
+# 8. PCRE JIT must be OFF and must stay off. Asserted on the ini AND on real
+#    behaviour, because the ini alone would not notice a build that ignored it —
+#    and the failure this prevents cannot be reproduced on this runner at all.
+[ "$("$BIN/php" -r 'echo ini_get("pcre.jit");')" = "0" ] \
+  || { echo "::error::pcre.jit is not baked to 0 — Composer will die on Apple Silicon"; exit 1; }
+if "$BIN/php" -r 'preg_match("/^a(b)c$/","abc");' 2>&1 | grep -q "JIT memory"; then
+  echo "::error::PCRE still attempts JIT despite pcre.jit=0"; exit 1
+fi
+echo "pcre.jit=0 baked in (PHP 7.4 bundles PCRE2 10.35, too old for Apple Silicon JIT)"
 
 # ─── Licences ────────────────────────────────────────────────────────────────
 # Static linking puts these libraries INSIDE the binary, so their licences travel
