@@ -68,37 +68,33 @@ export MACOSX_DEPLOYMENT_TARGET="12.0"
 # `-std=gnu23`, so every one becomes `error: unknown type name 'n1'`. Homebrew's
 # php@7.4 formula sets the same flag for the same reason.
 #
-# It goes through SPC_DEFAULT_C_FLAGS rather than CFLAGS because spc composes its
-# own compile flags from that variable and would otherwise drop ours — and
-# because spc's env loader only fills variables that are UNSET
-# (`GlobalEnvManager::init`: `if (getenv($k) === false)`), so exporting it here
-# wins over config/env.ini. The value must therefore repeat spc's own default
-# (`--target=<arch>-apple-darwin -Os`), since we are replacing it, not appending.
+# The flag is applied where PHP itself is compiled — see the export below.
+#
 case "$ARCH" in
   aarch64) MAC_ARCH=arm64 ;;
   *)       MAC_ARCH="$ARCH" ;;
 esac
+
+# **Scoped to PHP's own compile, not to every dependency.**
 #
-# `-Wno-incompatible-function-pointer-types` is the second half of the same
-# story. clang 16+ promoted that mismatch from warning to ERROR, and 7.4's
-# ext/curl declares its progress callback with the pre-curl-8 signature
-# (`double` where curl now passes `curl_off_t`). Homebrew's php@7.4 formula
-# passes the same flag, gated on Apple clang >= 1500.
+# These two flags exist for PHP 7.4's SOURCE — K&R definitions C23 removed, and
+# ext/curl's pre-curl-8 callback signature. They were first set via
+# SPC_DEFAULT_C_FLAGS, which spc feeds to EVERY library it builds, and that broke
+# the moment a C++ dependency appeared:
 #
-# It is a real narrowing of safety and worth naming as such: the mismatch it
-# permits is the one PHP 7.4 has always had with modern curl, and the callback
-# is called by curl with the wider type either way. The alternative is patching
-# ext/curl's signatures, which is a bigger diff against a dead branch for the
-# same runtime behaviour.
-export SPC_DEFAULT_C_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=gnu17 -Wno-incompatible-function-pointer-types"
-# NOTE: this does NOT fix intl. `PHP_CXX_COMPILE_STDCXX` appends intl's own
-# `-std=` AFTER the environment's, so `-std=c++11` wins whatever we set here —
-# which is why patches/0002 changes the standard where intl chooses it. Kept
-# because it is still the right default for C++ elsewhere in the tree.
-export SPC_DEFAULT_CXX_FLAGS="--target=${MAC_ARCH}-apple-darwin -Os -std=c++17"
-# Repeats spc's own macOS default and appends one flag; the loader only fills
-# UNSET variables, so exporting replaces rather than extends — the default has
-# to be restated or the build loses --disable-all and every other part of it.
+#   error: invalid argument '-std=gnu17' not allowed with 'C++'
+#   Failed module: library libjxl builder for macOS
+#
+# libjxl arrives through imagick → ImageMagick, so the leak was invisible until
+# the extension set reached parity. A flag that is right for one component and
+# applied to all of them is a latent break waiting for the next dependency.
+#
+# SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS is the variable spc uses for PHP's own
+# configure and make. Setting it directly means restating spc's default content,
+# because the loader fills UNSET variables only — the same replace-not-extend
+# rule as the configure prefix below.
+export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -std=gnu17 -Wno-incompatible-function-pointer-types"
+
 export SPC_CMD_PREFIX_PHP_CONFIGURE="./configure --prefix= --with-valgrind=no --enable-shared=no --enable-static=yes --disable-all --disable-phpdbg --without-pcre-jit"
 
 # Extension set. Aims at parity with the static-php.dev "bulk" builds rexenv
@@ -179,8 +175,8 @@ clang --version | head -2
 xcodebuild -version | head -1 || true
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 echo "pre-built deps: $PREBUILT"
-echo "SPC_DEFAULT_C_FLAGS=$SPC_DEFAULT_C_FLAGS"
-echo "SPC_DEFAULT_CXX_FLAGS=$SPC_DEFAULT_CXX_FLAGS"
+echo "PHP EXTRA_CFLAGS=$SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS"
+echo "configure prefix=$SPC_CMD_PREFIX_PHP_CONFIGURE"
 
 # ─── Fetch spc ───────────────────────────────────────────────────────────────
 say "static-php-cli ${SPC_VERSION} (${ARCH})"
