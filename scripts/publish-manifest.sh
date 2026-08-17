@@ -31,10 +31,17 @@
 #
 # ── The key ────────────────────────────────────────────────────────────────────
 #
-# `~/.rexenv/manifest-key.pem`, 0600, on the maintainer's machine. NOT a CI secret
-# and not in this repo: releases are published locally anyway, so the key has no
-# reason to leave, and keeping it off CI means a GitHub account compromise does not
-# get an attacker the ability to make every rexenv install run arbitrary bytes.
+# Two ways in, and the script does not care which:
+#
+#   • `~/.rexenv/manifest-key.pem` (0600) — a maintainer publishing from a laptop.
+#   • `$REXENV_MANIFEST_KEY` holding the PEM — what the GitHub Actions workflow
+#     passes from the `REXENV_MANIFEST_KEY` secret.
+#
+# Be clear-eyed about the second one: this key can make every rexenv install
+# download and run arbitrary bytes as the user, so on CI it is only as safe as
+# push access to this repo. The workflow is `workflow_dispatch`-only and gated on
+# a protected Environment, so reading the secret needs a human approval that is
+# logged — which is the property that makes it acceptable, not the secret store.
 #
 # Mint or rotate it with rexenv's own `scripts/gen-release-key.sh`. Rotation means
 # pinning the new public half in the app and shipping a release — which is exactly
@@ -84,11 +91,29 @@ for a in "$@"; do
   esac
 done
 
-[ -f "$KEY" ] || { echo "no signing key at $KEY — see docs/MANIFEST.md" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "openssl required" >&2; exit 1; }
 command -v gh >/dev/null || { echo "gh required" >&2; exit 1; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT; chmod 700 "$WORK"
+
+# The key, from the environment if CI supplied it. Written 0600 inside the 0700
+# work dir and removed with it — never to the repo, never to a shared /tmp path,
+# and never echoed. `set -x` is deliberately not used anywhere in this script.
+if [ -n "${REXENV_MANIFEST_KEY:-}" ]; then
+  KEY="$WORK/manifest-key.pem"
+  (umask 077; printf '%s\n' "$REXENV_MANIFEST_KEY" > "$KEY")
+fi
+[ -f "$KEY" ] || {
+  echo "no signing key: set \$REXENV_MANIFEST_KEY or put one at $KEY" >&2
+  echo "see docs/MANIFEST.md" >&2
+  exit 1
+}
+openssl pkey -in "$KEY" -noout 2>/dev/null || {
+  # A truncated or CRLF-mangled secret fails here rather than three minutes and
+  # ~400 MB of downloads later, at the signing step.
+  echo "the signing key is not a readable PEM private key" >&2
+  exit 1
+}
 
 # ── Serial: read what is published, increment ─────────────────────────────────
 CUR=0

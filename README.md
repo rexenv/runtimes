@@ -11,16 +11,25 @@ portable build. For a few things, nobody does.
 **It also publishes the signed PHP update manifest** — the document that lets a
 rexenv install move to a newer PHP patch without waiting for an app release. That
 half builds nothing: 8.x artifacts are static-php.dev's, and what a new patch needs
-is a digest somebody vouched for. One command does it:
+is a digest somebody vouched for.
+
+**A new PHP patch is out? Actions → “Publish PHP update manifest” → Run workflow.**
+Leave `dry_run` on for the first run, read the log, then run it again with it off.
+It discovers everything newer than rexenv's pins, downloads and hashes all four
+artifacts per version, signs, verifies its own signature, and replaces the
+`manifest` release.
+
+The same script runs from a laptop:
 
 ```sh
 ./scripts/publish-manifest.sh --dry-run   # discover + hash + sign, publish nothing
 ./scripts/publish-manifest.sh             # then publish
 ```
 
-Read **[docs/MANIFEST.md](docs/MANIFEST.md)** before running it the first time —
-particularly the four limits the app enforces on every entry, the monotonic serial,
-and where the signing key lives (not in CI, and deliberately so).
+Read **[docs/MANIFEST.md](docs/MANIFEST.md)** before the first run — particularly
+the four limits the app enforces on every entry, the monotonic serial, and §4 on the
+signing key, which is the most valuable secret in the project and lives in a
+reviewer-gated Environment for that reason.
 
 | Artifact | Why it is built here |
 |---|---|

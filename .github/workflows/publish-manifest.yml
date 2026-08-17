@@ -1,0 +1,101 @@
+name: Publish PHP update manifest
+
+# THE command. Run this when a new PHP patch is out and rexenv users should be
+# offered it: Actions → this workflow → Run workflow. Nothing else to do.
+#
+# It discovers what static-php.dev has published since rexenv's pins, downloads
+# every artifact, hashes it, signs the document with the release key, verifies
+# its own signature, and replaces the `manifest` release. The app fetches those
+# two files, checks the signature against a public key compiled into the binary,
+# and offers an Update button for what survives.
+#
+# Manual only, and `dry_run` defaults ON. This publishes a document that every
+# installed rexenv trusts; a run that fires on push is a supply-chain incident
+# waiting for a bad merge.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Discover, download, hash and sign — publish nothing. Leave ON for the first look."
+        type: boolean
+        default: true
+      versions:
+        description: "Optional: space-separated x.y.z to publish instead of discovering (e.g. '8.3.32 8.4.24')."
+        required: false
+        default: ""
+
+permissions:
+  contents: write # replace the `manifest` release
+
+concurrency:
+  # The serial is read-then-incremented from the published release, so two runs
+  # at once would compute the same next serial and the second would publish a
+  # document the app refuses as a replay. Queue instead.
+  group: publish-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Gate the SECRET, not the workflow. Whoever holds this key can make every
+    # rexenv install download and run arbitrary bytes as the user, so reading it
+    # needs a human approval that GitHub logs. Configure `manifest-signing` in
+    # Settings → Environments with required reviewers, and put
+    # REXENV_MANIFEST_KEY there — NOT in repo-level secrets, where any workflow
+    # on any branch could read it.
+    environment: manifest-signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REXENV_MANIFEST_KEY: ${{ secrets.REXENV_MANIFEST_KEY }}
+          # Through `env`, never interpolated into the script body. `${{ }}` is
+          # substituted BEFORE the shell sees the line, so a version string
+          # containing `; curl …` would execute — in the one job on this repo
+          # that holds the signing key.
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSIONS: ${{ inputs.versions }}
+        run: |
+          set -euo pipefail
+          [ -n "$REXENV_MANIFEST_KEY" ] || {
+            echo "::error::REXENV_MANIFEST_KEY is not set in the manifest-signing environment."
+            echo "See docs/MANIFEST.md §4 — mint it with rexenv's scripts/gen-release-key.sh."
+            exit 1
+          }
+          args=()
+          [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+          # Unquoted ON PURPOSE: the input is a space-separated list of versions.
+          # The script validates each against x.y.z and against the minors rexenv
+          # ships, so a junk value is refused rather than probed.
+          for v in $VERSIONS; do args+=("$v"); done
+          ./scripts/publish-manifest.sh "${args[@]}"
+
+      # The manifest is what the app will read; keep it whatever the outcome, so a
+      # dry run can be inspected and a published one has a record beside the log.
+      - name: Keep the manifest as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: |
+            manifest.json
+            manifest.json.sig
+          if-no-files-found: ignore
+
+      - name: What a user's app will see
+        if: ${{ inputs.dry_run == false }}
+        env:
+          BASE: https://github.com/${{ github.repository }}/releases/download/manifest
+        run: |
+          set -euo pipefail
+          # Fetch it back over the PUBLIC URL rather than trusting the local
+          # file: the thing that matters is what the release actually serves.
+          curl -fsSL "$BASE/manifest.json"     > fetched.json
+          curl -fsSL "$BASE/manifest.json.sig" > fetched.sig
+          cmp -s fetched.json manifest.json \
+            || { echo "::error::the published manifest is not the one this run signed"; exit 1; }
+          echo "published serial: $(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' fetched.json)"
+          echo "entries: $(grep -o '"name"' fetched.json | wc -l)"
