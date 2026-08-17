@@ -5,3 +5,6 @@ source/
 spc
 spc.tar.gz
 *.tar.gz
+.idea/
+manifest.json
+manifest.json.sig

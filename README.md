@@ -8,6 +8,20 @@ This repo exists for one reason: rexenv downloads every binary on demand and
 verifies it against a pinned hash. That works as long as somebody publishes a
 portable build. For a few things, nobody does.
 
+**It also publishes the signed PHP update manifest** — the document that lets a
+rexenv install move to a newer PHP patch without waiting for an app release. That
+half builds nothing: 8.x artifacts are static-php.dev's, and what a new patch needs
+is a digest somebody vouched for. One command does it:
+
+```sh
+./scripts/publish-manifest.sh --dry-run   # discover + hash + sign, publish nothing
+./scripts/publish-manifest.sh             # then publish
+```
+
+Read **[docs/MANIFEST.md](docs/MANIFEST.md)** before running it the first time —
+particularly the four limits the app enforces on every entry, the monotonic serial,
+and where the signing key lives (not in CI, and deliberately so).
+
 | Artifact | Why it is built here |
 |---|---|
 | **PHP 7.4.33** (cli + fpm, macOS arm64 + x86_64) | static-php.dev publishes 8.0–8.5 only. Every `dl.static-php.dev/.../php-7.4.3*` URL 404s. Homebrew has `php@7.4` bottles, but they bake `/opt/homebrew` paths for both `php.ini` **and** `OPENSSLDIR` — so TLS fails on a Mac without Homebrew, which is exactly rexenv's target machine. |
