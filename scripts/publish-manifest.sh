@@ -184,11 +184,22 @@ exists() { curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 "$1" | grep -q
 # hide everything after it. Only the CLI artifact is probed here — all four are
 # fetched and hashed below, and a version missing any of them is dropped whole,
 # because rexenv requires both arches of both kinds or it will not resolve.
+#
+# Naming versions on the command line ADDS to discovery; it does not replace it.
+# It used to replace it, and that is a truncation bug rather than a preference:
+# the manifest is a REPLACEMENT document, so `publish-manifest.sh 8.3.32` wrote a
+# manifest containing ONLY 8.3.32 and silently DELETED every other version from
+# it — after which a user on 8.2.32 can no longer resolve it (a fresh install or
+# a cache repair fails, and `php_update_apply` refuses it as unvouched).
+#
+# The one legitimate use of an explicit version — "upstream published it but my
+# probe cannot see it" — is served by adding, not by replacing.
 VERSIONS=()
 if [ ${#EXPLICIT[@]} -gt 0 ]; then
   VERSIONS=("${EXPLICIT[@]}")
-  echo "explicit versions: ${VERSIONS[*]}" >&2
-else
+  echo "explicit versions: ${VERSIONS[*]} (discovery still runs; these are added)" >&2
+fi
+{
   echo "discovering patches newer than each pin…" >&2
   for entry in "${PINS[@]}"; do
     minor="${entry%%:*}"; pin="${entry##*:}"
@@ -206,6 +217,11 @@ else
       p=$((p + 1))
     done
   done
+}
+# Dedupe, keep version order. `sort -V` so 8.3.9 precedes 8.3.10.
+if [ ${#VERSIONS[@]} -gt 0 ]; then
+  # shellcheck disable=SC2207
+  VERSIONS=($(printf '%s\n' "${VERSIONS[@]}" | sort -Vu))
 fi
 
 if [ "$DISCOVER" -eq 1 ]; then
@@ -268,6 +284,43 @@ done
 
 printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' \
   "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > manifest.json
+
+# ── Nothing the published document carries may DISAPPEAR ──────────────────────
+#
+# The manifest is a REPLACEMENT document, so every publish can silently delete.
+# A dropped entry is not cosmetic: a user already on that version can no longer
+# resolve it (a fresh install or a cache repair fails, and an apply refuses it as
+# unvouched), and the app has no way to notice — the document it fetched is
+# perfectly signed.
+#
+# Discovery is a live probe of somebody else's server, so "it answered yesterday
+# and 404s today" is a normal Tuesday, not a decision. This is the check that
+# turns that into a refusal instead of a deletion. Checked HERE, after the
+# document is written and before it is signed, because the thing to compare is
+# what will actually be published.
+if [ "$FIRST_RUN" -eq 0 ]; then
+  missing=""
+  # name|version|arch triples, one per line, from the PUBLISHED document.
+  while IFS= read -r triple; do
+    [ -n "$triple" ] || continue
+    n="${triple%%|*}"; rest="${triple#*|}"; v="${rest%%|*}"; a="${rest##*|}"
+    grep -q "\"name\":\"$n\",\"version\":\"$v\",\"arch\":\"$a\"" manifest.json \
+      || missing="${missing}  $n $v ($a)"$'\n'
+  done < <(tr '{' '\n' < "$WORK/manifest.json" \
+    | sed -n 's/.*"name":"\([^"]*\)","version":"\([^"]*\)","arch":"\([^"]*\)".*/\1|\2|\3/p')
+  if [ -n "$missing" ]; then
+    echo >&2
+    echo "REFUSING: the new manifest DROPS entries the published one carries:" >&2
+    printf '%s' "$missing" >&2
+    echo "Publishing it would delete them from the document, and users already on" >&2
+    echo "those versions could no longer resolve them. If a version really is gone" >&2
+    echo "upstream, say so deliberately: name every version you DO want on the" >&2
+    echo "command line (they are added to discovery, not substituted for it) and" >&2
+    echo "re-run with REXENV_MANIFEST_ALLOW_DROP=1." >&2
+    [ "${REXENV_MANIFEST_ALLOW_DROP:-0}" = "1" ] || exit 1
+    echo "REXENV_MANIFEST_ALLOW_DROP=1 — proceeding anyway." >&2
+  fi
+fi
 
 # ── Sign, then verify OUR OWN signature ───────────────────────────────────────
 # A signature nobody checked is a release nobody can install, and the failure

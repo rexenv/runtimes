@@ -49,8 +49,9 @@ Discovery probes upward from each minor's pin until **two consecutive misses** �
 two, not one, because upstream has skipped a patch number before and stopping at
 the first 404 would hide everything after it.
 
-To name versions yourself and skip discovery, put them in the workflow's
-`versions` input (space-separated), or pass them as arguments locally:
+To name versions yourself — for the one case discovery cannot serve, "upstream
+published it but my probe cannot see it" — put them in the workflow's `versions`
+input (space-separated), or pass them as arguments locally:
 
 ```sh
 ./scripts/publish-manifest.sh 8.3.32 8.4.24
@@ -58,6 +59,32 @@ To name versions yourself and skip discovery, put them in the workflow's
 
 Each is still validated: an argument that is not `x.y.z`, or whose minor rexenv
 does not ship, is refused rather than probed.
+
+**They are ADDED to discovery, not substituted for it.** This used to replace it,
+which was a truncation bug rather than a preference: the manifest is a
+REPLACEMENT document, so `publish-manifest.sh 8.3.32` wrote a manifest containing
+only 8.3.32 and silently deleted every other version from it. A user already on
+8.2.32 could then no longer resolve it — a fresh install or a cache repair fails,
+and the app refuses an apply for a version nothing vouches for.
+
+### Nothing that is published may disappear
+
+Because the document is a replacement, every publish can delete. Discovery is a
+live probe of somebody else's server, so "it answered yesterday and 404s today"
+is a normal Tuesday — not a decision anyone made.
+
+So between writing the document and signing it, the script asserts that every
+`name`+`version`+`arch` the **published** manifest carries is still present. If
+any is missing it refuses, naming them. If a version really is gone upstream and
+you mean it, say so deliberately:
+
+```sh
+REXENV_MANIFEST_ALLOW_DROP=1 ./scripts/publish-manifest.sh
+```
+
+The check is skipped on a genuine first publish (there is nothing to preserve),
+which is why telling "first run" apart from "could not read the release" matters
+twice.
 
 ### 2.1 The daily check
 
@@ -271,6 +298,7 @@ FastCGI from it.
 | `our own signature does not verify — refusing to publish` | Nothing was published. The key and the openssl on the runner disagree; check the key is ed25519 (`openssl pkey -in … -text -noout`). |
 | `the 'manifest' release EXISTS but manifest.json could not be downloaded` | A transient `gh`/network failure. Nothing was published, on purpose: continuing would have reset the serial and locked every installed app out of updates forever. Just re-run. |
 | `serial would be 1 on a repo that already has a 'manifest' release` | The same failure caught by the second check. Same answer: re-run. |
+| `REFUSING: the new manifest DROPS entries the published one carries` | Discovery no longer sees a version the published document lists — usually upstream removed or moved an asset. Nothing was published. Re-run; if it persists and you accept losing it, `REXENV_MANIFEST_ALLOW_DROP=1`. |
 | `→ 8.4.24 is incomplete upstream; dropped entirely` | Only some of the four artifacts exist. Correct behaviour — re-run once upstream finishes. |
 | A user's app shows no Update button after a publish | Three candidates, in order: their app's `RELEASE_PUBKEY` predates a key rotation; the published serial is not higher than one they already accepted; or their app's own pin is already ≥ the version offered. |
 | `is not a patch of a minor rexenv ships` | Either a typo in an explicit version, or rexenv added a minor and `PINS` has not caught up. §5. |
