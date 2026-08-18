@@ -391,8 +391,13 @@ done
 
 [ ${#KEPT[@]} -gt 0 ] || { echo "no complete version to publish"; exit 0; }
 
+# A dry run writes into the scratch dir, not the working tree: manifest.json and
+# manifest.json.sig are TRACKED files now (they are the published artifact), and
+# a "look, publish nothing" flag that leaves the repo dirty is a flag that lies.
+OUT_DIR="."
+[ "$DRY" -eq 1 ] && OUT_DIR="$WORK/out" && mkdir -p "$OUT_DIR"
 printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' \
-  "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > manifest.json
+  "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > "$OUT_DIR/manifest.json"
 
 # ── Nothing the published document carries may DISAPPEAR ──────────────────────
 #
@@ -413,7 +418,7 @@ if [ "$FIRST_RUN" -eq 0 ]; then
   while IFS= read -r triple; do
     [ -n "$triple" ] || continue
     n="${triple%%|*}"; rest="${triple#*|}"; v="${rest%%|*}"; a="${rest##*|}"
-    grep -q "\"name\":\"$n\",\"version\":\"$v\",\"arch\":\"$a\"" manifest.json \
+    grep -q "\"name\":\"$n\",\"version\":\"$v\",\"arch\":\"$a\"" "$OUT_DIR/manifest.json" \
       || missing="${missing}  $n $v ($a)"$'\n'
   done < <(tr '{' '\n' < "$WORK/manifest.json" \
     | sed -n 's/.*"name":"\([^"]*\)","version":"\([^"]*\)","arch":"\([^"]*\)".*/\1|\2|\3/p')
@@ -434,22 +439,22 @@ fi
 # ── Sign, then verify OUR OWN signature ───────────────────────────────────────
 # A signature nobody checked is a release nobody can install, and the failure
 # lands on a user as "the manifest signature does not verify".
-openssl pkeyutl -sign -inkey "$KEY" -rawin -in manifest.json -out "$WORK/sig.bin"
-xxd -p -c 256 < "$WORK/sig.bin" | tr -d '\n' > manifest.json.sig
+openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$OUT_DIR/manifest.json" -out "$WORK/sig.bin"
+xxd -p -c 256 < "$WORK/sig.bin" | tr -d '\n' > "$OUT_DIR/manifest.json.sig"
 openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in "$KEY" -pubout) \
-  -rawin -in manifest.json -sigfile "$WORK/sig.bin" >/dev/null \
+  -rawin -in "$OUT_DIR/manifest.json" -sigfile "$WORK/sig.bin" >/dev/null \
   || { echo "our own signature does not verify — refusing to publish" >&2; exit 1; }
 
 PUB="$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | xxd -p -c 64)"
 echo
-echo "serial $CUR → $SERIAL   versions: ${KEPT[*]}   entries: $(( $(grep -o '"name"' manifest.json | wc -l) ))"
+echo "serial $CUR → $SERIAL   versions: ${KEPT[*]}   entries: $(( $(grep -o '"name"' "$OUT_DIR/manifest.json" | wc -l) ))"
 echo "signed with public key $PUB"
 echo "  ↳ this MUST equal RELEASE_PUBKEY in rexenv's src-tauri/src/core/updates.rs,"
 echo "    or every shipped build will ignore this manifest."
 
 if [ "$DRY" -eq 1 ]; then
   echo
-  echo "--dry-run: manifest.json and manifest.json.sig written, nothing published."
+  echo "--dry-run: written to $OUT_DIR (outside the working tree), nothing published."
   exit 0
 fi
 
@@ -477,8 +482,8 @@ put() {
     -f "content=$(base64 < "$body" | tr -d '\n')" \
     "${sha_arg[@]}" --jq '.commit.sha' >/dev/null
 }
-put manifest.json manifest.json
-put manifest.json.sig manifest.json.sig
+put manifest.json "$OUT_DIR/manifest.json"
+put manifest.json.sig "$OUT_DIR/manifest.json.sig"
 echo
 echo "Published. Verify what a user's app will see (raw is CDN-cached ~5 min):"
 echo "  curl -sL https://raw.githubusercontent.com/$REPO/main/manifest.json | head -c 200"
