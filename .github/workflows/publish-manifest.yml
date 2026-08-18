@@ -9,6 +9,10 @@ name: Publish PHP update manifest
 # two files, checks the signature against a public key compiled into the binary,
 # and offers an Update button for what survives.
 #
+# You are told when to run it: `discover-php.yml` checks upstream every morning
+# and opens an issue when there is something here worth publishing. That one holds
+# no key and can only write issues.
+#
 # Manual only, and `dry_run` defaults ON. This publishes a document that every
 # installed rexenv trusts; a run that fires on push is a supply-chain incident
 # waiting for a bad merge.

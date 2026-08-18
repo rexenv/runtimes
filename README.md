@@ -13,6 +13,11 @@ rexenv install move to a newer PHP patch without waiting for an app release. Tha
 half builds nothing: 8.x artifacts are static-php.dev's, and what a new patch needs
 is a digest somebody vouched for.
 
+**You do not have to watch for one.** A second workflow runs every morning, asks
+static-php.dev what it has published above rexenv's pins, and opens an issue if
+anything is left after subtracting what the manifest already carries. It holds no
+key and publishes nothing — it only tells you there is a button worth pressing.
+
 **A new PHP patch is out? Actions → “Publish PHP update manifest” → Run workflow.**
 Leave `dry_run` on for the first run, read the log, then run it again with it off.
 It discovers everything newer than rexenv's pins, downloads and hashes all four

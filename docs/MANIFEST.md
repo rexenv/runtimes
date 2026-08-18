@@ -19,6 +19,8 @@ Same thing from a laptop, if you would rather:
 
 Both run the identical script. The workflow just supplies the key from a secret.
 
+You will be told when it is worth doing — see [§2.1](#21-the-daily-check).
+
 ---
 
 ## 1. What this actually does, and why it is not a build
@@ -56,6 +58,45 @@ To name versions yourself and skip discovery, put them in the workflow's
 
 Each is still validated: an argument that is not `x.y.z`, or whose minor rexenv
 does not ship, is refused rather than probed.
+
+### 2.1 The daily check
+
+`.github/workflows/discover-php.yml` runs at 06:17 UTC and on demand. It calls the
+same script in a third mode:
+
+```sh
+./scripts/publish-manifest.sh --discover    # probe upstream, print what is new, touch nothing
+```
+
+`--discover` needs **no signing key** — the key check is skipped entirely in that
+mode — so the daily workflow runs with `contents: read` and `issues: write`, cannot
+reach the `manifest-signing` environment, and could not publish if it wanted to.
+That separation is the design: discovery is a fact about upstream and can be
+automated, while *signing* is a judgement about what every installed rexenv will be
+told to download and run, and stays a decision a human makes and GitHub logs.
+
+It prints matching versions to **stdout, one per line, and nothing else** — all the
+progress chatter goes to stderr — so an empty stdout means "nothing to report" and
+the workflow stays silent.
+
+**It subtracts what the published manifest already lists.** Without that it would
+file the same issue every morning: `PINS` are fixed floors and do not move when you
+publish, so a patch that has shipped is still "newer than the pin" tomorrow.
+
+That subtraction is **only** in `--discover`. It must never filter the publish path,
+and the reason is worth stating plainly: the manifest is a **replacement** document,
+not an accumulating one — each publish writes exactly the versions that run
+discovered. Skip an already-published version there and the next publish silently
+drops it from the document, putting those users back on the patch compiled into
+their app.
+
+One issue is kept, labelled `php-update`, with a `<!-- discovered: … -->` marker in
+its body. Same set as yesterday → the run stays quiet; a changed set → the body is
+rewritten and a comment notes what moved. Close the issue once you have published.
+
+GitHub disables scheduled workflows after 60 days without repository activity. If
+this goes quiet for a long stretch, check that the schedule is still enabled rather
+than assuming upstream has been idle.
 
 ### "Nothing newer than the pins is published upstream"
 

@@ -4,6 +4,13 @@
 #   ./scripts/publish-manifest.sh                 discover everything and publish
 #   ./scripts/publish-manifest.sh --dry-run       discover and sign, publish nothing
 #   ./scripts/publish-manifest.sh 8.3.32 8.4.24   only these, no discovery
+#   ./scripts/publish-manifest.sh --discover      print what is new, touch nothing
+#
+# `--discover` is the read-only half, for the daily cron: it probes upstream,
+# subtracts what the published manifest already carries, and prints the leftover
+# versions one per line on stdout — nothing else goes to stdout in that mode. It
+# needs NO signing key, so the workflow that runs it every day never touches the
+# secret. An empty stdout means there is nothing to tell a human about.
 #
 # This is the whole "support the new PHP versions" job. There is nothing to build:
 # rexenv installs static-php.dev's portable builds for 8.x, so what a new version
@@ -77,10 +84,12 @@ PINS=(
 )
 
 DRY=0
+DISCOVER=0
 EXPLICIT=()
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
+    --discover) DISCOVER=1 ;;
     --check-pins)
       printf '%s\n' "${PINS[@]}"
       echo
@@ -99,6 +108,10 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT; chmod 700 "$WORK"
 # The key, from the environment if CI supplied it. Written 0600 inside the 0700
 # work dir and removed with it — never to the repo, never to a shared /tmp path,
 # and never echoed. `set -x` is deliberately not used anywhere in this script.
+# `--discover` reads and reports; it never signs. Skipping the key here is the
+# whole point — the daily workflow can run with `contents: read` and no access to
+# the `manifest-signing` environment at all.
+if [ "$DISCOVER" -eq 0 ]; then
 if [ -n "${REXENV_MANIFEST_KEY:-}" ]; then
   KEY="$WORK/manifest-key.pem"
   (umask 077; printf '%s\n' "$REXENV_MANIFEST_KEY" > "$KEY")
@@ -114,13 +127,22 @@ openssl pkey -in "$KEY" -noout 2>/dev/null || {
   echo "the signing key is not a readable PEM private key" >&2
   exit 1
 }
+fi
 
 # ── Serial: read what is published, increment ─────────────────────────────────
 CUR=0
+PUBLISHED=""
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
   && gh release download "$TAG" --repo "$REPO" --pattern manifest.json --dir "$WORK" 2>/dev/null; then
   CUR="$(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$WORK/manifest.json" | head -1)"
   CUR="${CUR:-0}"
+  # The versions the published document already carries. Used ONLY by --discover,
+  # to decide whether a human needs telling. It must never filter the publish
+  # path: the manifest is a REPLACEMENT set, not an accumulating one, so dropping
+  # an already-published version from a later run would delete it from the
+  # document and drop those users back to the pin compiled into their app.
+  PUBLISHED="$(tr ',' '\n' < "$WORK/manifest.json" \
+    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' | sort -u)"
 fi
 SERIAL=$((CUR + 1))
 
@@ -136,9 +158,9 @@ exists() { curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 "$1" | grep -q
 VERSIONS=()
 if [ ${#EXPLICIT[@]} -gt 0 ]; then
   VERSIONS=("${EXPLICIT[@]}")
-  echo "explicit versions: ${VERSIONS[*]}"
+  echo "explicit versions: ${VERSIONS[*]}" >&2
 else
-  echo "discovering patches newer than each pin…"
+  echo "discovering patches newer than each pin…" >&2
   for entry in "${PINS[@]}"; do
     minor="${entry%%:*}"; pin="${entry##*:}"
     [ "$minor" = "7.4" ] && continue   # ours; static-php.dev has never published it
@@ -147,7 +169,7 @@ else
     while [ "$misses" -lt 2 ] && [ "$p" -lt $((start + 30)) ]; do
       v="${minor}.${p}"
       if exists "$BASE/php-${v}-cli-macos-aarch64.tar.gz"; then
-        echo "  found $v"
+        echo "  found $v" >&2
         VERSIONS+=("$v"); misses=0
       else
         misses=$((misses + 1))
@@ -155,6 +177,17 @@ else
       p=$((p + 1))
     done
   done
+fi
+
+if [ "$DISCOVER" -eq 1 ]; then
+  NEW=()
+  for V in "${VERSIONS[@]}"; do
+    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("$V")
+  done
+  echo "upstream above the pins: ${VERSIONS[*]:-none}" >&2
+  echo "already in the published manifest: $(printf '%s ' $PUBLISHED)" >&2
+  [ ${#NEW[@]} -gt 0 ] && printf '%s\n' "${NEW[@]}"
+  exit 0
 fi
 
 if [ ${#VERSIONS[@]} -eq 0 ]; then

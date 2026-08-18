@@ -1,0 +1,106 @@
+name: Check for new PHP patches
+
+# The read-only half of the update job. Every morning it asks static-php.dev what
+# it has published above rexenv's pins, subtracts what the `manifest` release
+# already carries, and — only if something is left — opens or updates one issue
+# saying so. Then a human runs "Publish PHP update manifest".
+#
+# It deliberately does NOT publish. The signing key can make every rexenv install
+# download and run arbitrary bytes as the user, so what it signs is a human
+# decision; this workflow just makes sure the human hears about it the next day
+# instead of the next time they happen to look. It holds no secret, cannot reach
+# the `manifest-signing` environment, and can only write issues.
+on:
+  schedule:
+    # 06:17 UTC. Off the hour on purpose — scheduled runs pile up at :00 and get
+    # delayed. GitHub disables schedules after 60 days with no repo activity, so
+    # if this goes quiet for months, check that it is still enabled.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read # read the published manifest to see what is already covered
+  issues: write # the one thing it produces
+
+concurrency:
+  group: discover-php
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask upstream what is new
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # --discover needs no signing key and prints ONLY versions on stdout,
+          # one per line. Empty means nothing to tell anyone about.
+          ./scripts/publish-manifest.sh --discover > new.txt
+          {
+            echo "versions=$(tr '\n' ' ' < new.txt | sed 's/ *$//')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Tell a human
+        if: steps.probe.outputs.versions != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Through env, never interpolated into the script body — the value comes
+          # from an upstream file listing, and `${{ }}` is substituted before the
+          # shell sees the line.
+          VERSIONS: ${{ steps.probe.outputs.versions }}
+        run: |
+          set -euo pipefail
+          LABEL=php-update
+          # Idempotent: the label has to exist before `issue list --label` will
+          # accept it, and on a fresh repo it does not.
+          gh label create "$LABEL" --repo "$REPO" \
+            --color 1D76DB --description "A new PHP patch is available upstream" \
+            >/dev/null 2>&1 || true
+
+          # The marker is how a re-run recognises it has nothing new to say. Same
+          # set as last time → stay silent, so a version that sits unpublished for
+          # a week does not generate seven notifications.
+          MARKER="<!-- discovered: $VERSIONS -->"
+          BODY="$MARKER
+          static-php.dev has published PHP patches that rexenv does not yet offer:
+
+          **$VERSIONS**
+
+          To ship them, run [Publish PHP update manifest](https://github.com/$REPO/actions/workflows/publish-manifest.yml) —
+          leave \`dry_run\` ON for the first look, then run it again with \`dry_run\` OFF.
+          Discovery is automatic, so the \`versions\` box can stay empty.
+
+          Publishing needs an approval on the \`manifest-signing\` environment; that
+          approval is the point, because the key being used signs a document every
+          installed rexenv trusts. See \`docs/MANIFEST.md\`.
+
+          This issue is maintained by \`.github/workflows/discover-php.yml\`. It is
+          rewritten when the upstream list changes and stays quiet when it does not;
+          close it once the manifest is published."
+
+          NUM="$(gh issue list --repo "$REPO" --label "$LABEL" --state open -L 1 \
+                 --json number -q '.[0].number // empty')"
+
+          if [ -n "$NUM" ]; then
+            if gh issue view "$NUM" --repo "$REPO" --json body -q .body | grep -qF "$MARKER"; then
+              echo "issue #$NUM already says exactly this — staying quiet."
+              exit 0
+            fi
+            gh issue edit "$NUM" --repo "$REPO" --body "$BODY"
+            gh issue comment "$NUM" --repo "$REPO" --body "Upstream list changed. Now available: **$VERSIONS**"
+            echo "updated issue #$NUM"
+          else
+            gh issue create --repo "$REPO" --label "$LABEL" \
+              --title "New PHP patches available upstream" --body "$BODY"
+          fi
+
+      - name: Nothing new
+        if: steps.probe.outputs.versions == ''
+        run: echo "Nothing upstream that the published manifest does not already carry."
