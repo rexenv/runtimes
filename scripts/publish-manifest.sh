@@ -73,6 +73,24 @@ BASE="https://dl.static-php.dev/static-php-cli/bulk"
 # discovery probe starts AT the pin, which makes a stale entry harmless rather
 # than silent: the worst a wrong floor does is offer a patch the app already has,
 # which the app then filters out because it is not newer than its own pin.
+# ── Adminer: a SECOND family in the same document ─────────────────────────────
+#
+# Not a `PINS` row — Adminer has no "minor track" the way PHP does. rexenv's
+# `updates::Family::Adminer` accepts any version up to a MAJOR ceiling, because
+# rexenv's controls for the database console (the loopback login gate, the
+# frame-ancestors bound) live inside Adminer's own plugin API and a major bump is
+# what may move those hooks.
+#
+# `ADMINER_MAX_MAJOR` must equal `updates::ADMINER_MAX_MAJOR` in the app, and
+# BOTH are evidence: the app's number is the newest major whose plugin API has
+# been run against rexenv's wrapper. Raising it here without raising it there
+# publishes entries every installed app silently drops.
+# `../rexenv/scripts/check-php-pins.sh` compares the two.
+ADMINER_PIN="5.4.2"
+ADMINER_MAX_MAJOR="6"
+ADMINER_REPO="vrana/adminer"
+ADMINER_BASE="https://github.com/$ADMINER_REPO/releases/download"
+
 PINS=(
   "7.4:7.4.33"   # ours, built here — never on static-php.dev
   "8.0:8.0.30"
@@ -86,16 +104,22 @@ PINS=(
 DRY=0
 DISCOVER=0
 EXPLICIT=()
+ADMINER_EXPLICIT=()
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --discover) DISCOVER=1 ;;
     --check-pins)
       printf '%s\n' "${PINS[@]}"
+      echo "adminer:$ADMINER_PIN (ceiling: major <= $ADMINER_MAX_MAJOR)"
       echo
       echo "Compare with PHP_VERSIONS in rexenv's src-tauri/src/core/binaries.rs."
       exit 0 ;;
     -*) echo "unknown flag: $a" >&2; exit 2 ;;
+    # `adminer:6.0.1` names the OTHER family. Prefixed rather than guessed from
+    # the number: 5.4.2 is a plausible Adminer version and a plausible typo for a
+    # PHP one, and guessing wrong publishes an entry every app drops.
+    adminer:*) ADMINER_EXPLICIT+=("${a#adminer:}") ;;
     *) EXPLICIT+=("$a") ;;
   esac
 done
@@ -224,18 +248,61 @@ if [ ${#VERSIONS[@]} -gt 0 ]; then
   VERSIONS=($(printf '%s\n' "${VERSIONS[@]}" | sort -Vu))
 fi
 
+# ── Adminer discovery: a LISTING, not a probe ────────────────────────────────
+#
+# PHP is probed upward because static-php.dev publishes no index. Adminer does:
+# the GitHub releases API is authoritative, so guessing 5.4.3, 5.4.4, … would be
+# slower AND wrong at every track boundary — the pin is 5.4.2 and the newest is
+# 6.0.1, which no upward-from-the-pin walk with a miss budget would ever reach.
+#
+# `.draft==false` is load-bearing and non-obvious: this script runs with GH_TOKEN
+# in CI, so drafts ARE visible to it — and a draft's asset URL 404s for everyone
+# else. Publishing one would put an entry in the manifest that no user can
+# resolve. Prereleases are excluded for the ordinary reason.
+ADMINER_VERSIONS=()
+if [ ${#ADMINER_EXPLICIT[@]} -gt 0 ]; then
+  ADMINER_VERSIONS=("${ADMINER_EXPLICIT[@]}")
+  echo "explicit adminer versions: ${ADMINER_VERSIONS[*]} (discovery still runs)" >&2
+fi
+echo "listing adminer releases newer than ${ADMINER_PIN}…" >&2
+while read -r tag; do
+  v="${tag#v}"
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) ;; *) continue ;; esac
+  # Strictly newer than the pin. `sort -V` decides, so 5.4.10 beats 5.4.9.
+  [ "$(printf '%s\n%s\n' "$ADMINER_PIN" "$v" | sort -V | tail -1)" = "$v" ] || continue
+  [ "$v" = "$ADMINER_PIN" ] && continue
+  # …and at or below the ceiling the app will accept.
+  [ "${v%%.*}" -le "$ADMINER_MAX_MAJOR" ] || {
+    echo "  skipping $v — major above the probed ceiling ($ADMINER_MAX_MAJOR)" >&2
+    continue
+  }
+  echo "  found adminer $v" >&2
+  ADMINER_VERSIONS+=("$v")
+done < <(gh api "repos/$ADMINER_REPO/releases" --paginate \
+  --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null || true)
+if [ ${#ADMINER_VERSIONS[@]} -gt 0 ]; then
+  # shellcheck disable=SC2207
+  ADMINER_VERSIONS=($(printf '%s\n' "${ADMINER_VERSIONS[@]}" | sort -Vu))
+fi
+
 if [ "$DISCOVER" -eq 1 ]; then
+  # QUALIFIED: unqualified, an issue body reads "8.4.24 5.5.1" and a human
+  # cannot tell which project 5.5.1 belongs to.
   NEW=()
   for V in "${VERSIONS[@]}"; do
-    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("$V")
+    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("php:$V")
   done
-  echo "upstream above the pins: ${VERSIONS[*]:-none}" >&2
+  for V in "${ADMINER_VERSIONS[@]}"; do
+    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("adminer:$V")
+  done
+  echo "upstream above the pins — php: ${VERSIONS[*]:-none}" >&2
+  echo "upstream above the pins — adminer: ${ADMINER_VERSIONS[*]:-none}" >&2
   echo "already in the published manifest: $(printf '%s ' $PUBLISHED)" >&2
   [ ${#NEW[@]} -gt 0 ] && printf '%s\n' "${NEW[@]}"
   exit 0
 fi
 
-if [ ${#VERSIONS[@]} -eq 0 ]; then
+if [ ${#VERSIONS[@]} -eq 0 ] && [ ${#ADMINER_VERSIONS[@]} -eq 0 ]; then
   echo
   echo "Nothing newer than the pins is published upstream. Nothing to do."
   echo "That is the NORMAL state: static-php.dev rebuilds after each upstream"
@@ -278,6 +345,34 @@ for V in "${VERSIONS[@]}"; do
     # and works on another.
     echo "  → $V is incomplete upstream; dropped entirely."
   fi
+done
+
+# ── Adminer: one artifact per version, arch-free ─────────────────────────────
+#
+# `arch: "any"` because it is ONE .php file — the same bytes on every machine.
+# Publishing it twice under two arch labels would be a fiction stated twice, and
+# rexenv refuses it: `Family::Adminer::arch_ok` accepts only "any", so a per-arch
+# row is dropped and the version becomes unofferable.
+for V in "${ADMINER_VERSIONS[@]}"; do
+  case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not an x.y.z adminer version: $V" >&2; exit 1 ;; esac
+  [ "${V%%.*}" -le "$ADMINER_MAX_MAJOR" ] || {
+    echo "adminer $V is above the probed ceiling ($ADMINER_MAX_MAJOR) — the app would drop it. Skipping." >&2
+    continue
+  }
+  # The `-en.php` asset: the English-only build, which is what rexenv pins.
+  URL="$ADMINER_BASE/v${V}/adminer-${V}-en.php"
+  OUT="$WORK/adminer-$V"
+  printf '  adminer %s … ' "$V"
+  if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
+    echo "MISSING"
+    echo "  → adminer $V has no $(basename "$URL") asset; dropped." >&2
+    continue
+  fi
+  SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
+  echo "$SHA"
+  ENTRIES="${ENTRIES:+$ENTRIES,}$(printf '{"name":"adminer","version":"%s","arch":"any","url":"%s","sha256":"%s"}' \
+    "$V" "$URL" "$SHA")"
+  KEPT+=("adminer $V")
 done
 
 [ ${#KEPT[@]} -gt 0 ] || { echo "no complete version to publish"; exit 0; }

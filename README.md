@@ -18,7 +18,8 @@ static-php.dev what it has published above rexenv's pins, and opens an issue if
 anything is left after subtracting what the manifest already carries. It holds no
 key and publishes nothing — it only tells you there is a button worth pressing.
 
-**A new PHP patch is out? Actions → “Publish PHP update manifest” → Run workflow.**
+**A new PHP patch — or a new Adminer release — is out? Actions → “Publish PHP
+update manifest” → Run workflow.**
 Leave `dry_run` on for the first run, read the log, then run it again with it off.
 It discovers everything newer than rexenv's pins, downloads and hashes all four
 artifacts per version, signs, verifies its own signature, and replaces the

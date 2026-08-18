@@ -149,6 +149,56 @@ data, and data is exactly the thing that must not be assumed to have been
 generated correctly. If you ever hand-edit a manifest and a version silently
 stops being offered, this is why — count the artifacts.
 
+## 2.2 Adminer rides the same manifest
+
+rexenv's database console is Adminer, a single `.php` file pinned by hash like
+everything else — and it is the **second family** in this document. Nothing extra
+to run: the same command discovers and publishes both.
+
+Adminer discovery is a **listing, not a probe**. PHP is walked upward because
+static-php.dev publishes no index; Adminer's releases API is authoritative, and a
+probe would be both slower and wrong at every track boundary — the pin is 5.4.2
+and the newest is 6.0.1, which no upward-from-the-pin walk with a miss budget
+would ever reach.
+
+Two things about the listing are load-bearing and non-obvious:
+
+- **`.draft == false`.** This script runs with `GH_TOKEN` in CI, so drafts ARE
+  visible to it — and a draft's asset URL 404s for everyone else. Publishing one
+  puts an entry in the manifest that no user can resolve.
+- **`arch: "any"`.** One file, the same bytes on every machine. rexenv refuses a
+  per-arch Adminer row outright (`Family::Adminer::arch_ok`), because two rows for
+  one file is a fiction stated twice — and it would make a HALF-published Adminer
+  version structurally legal, which is the failure the completeness rule exists
+  for.
+
+### `ADMINER_MAX_MAJOR` — a ceiling that is evidence
+
+`ADMINER_PIN` and `ADMINER_MAX_MAJOR` are separate variables, never `PINS` rows:
+Adminer has no minor track the way PHP does. The ceiling exists because rexenv's
+controls for the database console — the passwordless-login **loopback gate**, the
+frame-ancestors bound, the `X-Frame-Options` removal — live inside **Adminer's own
+plugin API**. rexenv's wrapper subclasses `\Adminer\Adminer` and overrides
+`login`/`loginForm`/`headers`/`csp`. A major bump is what may move those hooks,
+and it would do it silently, with the console still serving.
+
+`ADMINER_MAX_MAJOR` here must equal `updates::ADMINER_MAX_MAJOR` in the app, and
+**both are evidence**: the app's number is the newest major whose plugin API has
+actually been run against the wrapper. Raising it here without raising it there
+publishes entries every installed app silently drops. Run rexenv's
+`scripts/check-php-pins.sh` — it compares both sides and exits non-zero on a
+ceiling mismatch.
+
+To raise it: in the app repo, `cargo run --example adminer_check` against the new
+major, then raise `updates::ADMINER_MAX_MAJOR`, ship a release, and only then
+raise it here. The app also probes each candidate at APPLY time and refuses one
+that no longer binds, so the ceiling is the structural half of a two-part answer.
+
+To name Adminer versions by hand: `./scripts/publish-manifest.sh adminer:6.0.1`.
+Prefixed rather than guessed from the number — `5.4.2` is a plausible Adminer
+version and a plausible typo for a PHP one, and guessing wrong publishes an entry
+every app drops.
+
 ## 3. The four limits the app enforces — respect them or entries are dropped
 
 rexenv drops any entry that breaks these, silently and per-entry (one bad row must
@@ -157,9 +207,10 @@ whole document, because it says the document is not ours.
 
 | Limit | Why |
 |---|---|
-| `name` ∈ {`php`, `php-fpm`} | rexenv's resolver is name-generic, and `caddy` runs as a **root LaunchDaemon** on a user's machine. A manifest that can name a binary could name that one. |
+| `name` ∈ {`php`, `php-fpm`, `adminer`} | rexenv's resolver is name-generic, and `caddy` runs as a **root LaunchDaemon** on a user's machine. A manifest that can name a binary could name that one — so it names only declared FAMILIES, and each variant states what it grants. |
 | `https://` from `dl.static-php.dev/` or `github.com/rexenv/` | There is no scheme or host constraint anywhere on rexenv's download path, because every URL is normally a compiled-in `format!`. A manifest makes `http://attacker/` expressible. |
-| `version` is a patch of a minor rexenv **already ships** | Per-minor facts — the EOL date, whether Xdebug is available, the pool port — are compiled into the app. A new MINOR arriving this way would render with no EOL date and Xdebug silently missing. |
+| `version` is on a track the family accepts | **PHP**: a patch of a minor rexenv already ships — per-minor facts (the EOL date, Xdebug availability, the pool port) are compiled in, so a runtime-delivered new MINOR would render with no EOL date and Xdebug silently missing. **Adminer**: a major at or below `ADMINER_MAX_MAJOR`, the newest whose plugin API has been probed against rexenv's wrapper (§2.2). |
+| `arch` is the one the family carries | PHP rows are `arm64`/`x86_64`; Adminer rows are `any`. A per-arch Adminer row is dropped. |
 | lowercase 64-hex `sha256` | The form the existing digest gate compares. |
 
 Plus a **monotonic `serial`**: the app refuses any document whose serial is not
