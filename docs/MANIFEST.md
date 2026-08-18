@@ -142,6 +142,25 @@ the signature alone does not stop that. The script reads the published serial an
 increments. **Never hand-edit it downwards**; a lower serial is a manifest nobody
 can install.
 
+### The serial is read, not assumed — and a failed read REFUSES
+
+The nastiest failure this repo can produce is not a bad manifest, it is a *good*
+one nobody can install. Publishing with the serial reset to 1 deletes the tag,
+republishes, and every rexenv that already accepted a higher serial rejects the
+result **permanently**, with a correctly signed document and no error anywhere.
+
+So the script tells two states apart that used to share a branch:
+
+| State | What happens |
+|---|---|
+| No `manifest` release exists | Genuine first publish. Serial 1. Says so. |
+| The release exists, `manifest.json` will not download | **Refuses**, non-zero, naming the reason. Retry. |
+| The release exists, its `manifest.json` has no readable `serial` | **Refuses**, same reason. |
+
+It was one `gh release view && gh release download` conditional, so one flaky
+call landed in the "first run ever" branch. There is also a belt-and-braces check
+before signing: serial 1 on a repo that already has the release is refused.
+
 And the app keeps its **compiled-in pins as a floor**. A manifest can only ADD
 versions or move a minor forward. It can never point a version the app already
 pins at different bytes, and it can never move a user *below* the patch their app
@@ -250,6 +269,8 @@ FastCGI from it.
 | `REXENV_MANIFEST_KEY is not set` | The `manifest-signing` environment has no secret, or the run was approved against a different environment. §4. |
 | `the signing key is not a readable PEM private key` | The secret is truncated, or was pasted without the `-----BEGIN`/`-----END` lines. Re-paste the whole file. |
 | `our own signature does not verify — refusing to publish` | Nothing was published. The key and the openssl on the runner disagree; check the key is ed25519 (`openssl pkey -in … -text -noout`). |
+| `the 'manifest' release EXISTS but manifest.json could not be downloaded` | A transient `gh`/network failure. Nothing was published, on purpose: continuing would have reset the serial and locked every installed app out of updates forever. Just re-run. |
+| `serial would be 1 on a repo that already has a 'manifest' release` | The same failure caught by the second check. Same answer: re-run. |
 | `→ 8.4.24 is incomplete upstream; dropped entirely` | Only some of the four artifacts exist. Correct behaviour — re-run once upstream finishes. |
 | A user's app shows no Update button after a publish | Three candidates, in order: their app's `RELEASE_PUBKEY` predates a key rotation; the published serial is not higher than one they already accepted; or their app's own pin is already ≥ the version offered. |
 | `is not a patch of a minor rexenv ships` | Either a typo in an explicit version, or rexenv added a minor and `PINS` has not caught up. §5. |

@@ -130,12 +130,36 @@ openssl pkey -in "$KEY" -noout 2>/dev/null || {
 fi
 
 # ── Serial: read what is published, increment ─────────────────────────────────
+#
+# The two states are told APART on purpose. "No release yet" is a genuine first
+# publish and starts at 1. "There is a release and I could not read it" is a
+# refusal, because the fallback is catastrophic and silent: `CUR=0` makes
+# `SERIAL=1`, the tag is deleted and republished, and every installed app then
+# rejects the new document forever (`accept_with`: serial 1 is not > the 4 it
+# already accepted). A correctly signed manifest that nobody can install, from
+# one flaky `gh` call — a TOTAL update outage with no error anywhere.
+#
+# The old form was a single `view && download` conditional, so a transient
+# failure of either landed in the same branch as "first run ever".
 CUR=0
+FIRST_RUN=0
 PUBLISHED=""
-if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
-  && gh release download "$TAG" --repo "$REPO" --pattern manifest.json --dir "$WORK" 2>/dev/null; then
+if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  FIRST_RUN=1
+  echo "no '$TAG' release yet — this is the first publish (serial 1)" >&2
+else
+  gh release download "$TAG" --repo "$REPO" --pattern manifest.json --dir "$WORK" 2>/dev/null || {
+    echo "the '$TAG' release EXISTS but manifest.json could not be downloaded." >&2
+    echo "Refusing: publishing now would reset the serial to 1, and every installed" >&2
+    echo "rexenv would reject the result as a replay — permanently. Retry." >&2
+    exit 1
+  }
   CUR="$(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$WORK/manifest.json" | head -1)"
-  CUR="${CUR:-0}"
+  [ -n "$CUR" ] || {
+    echo "the published manifest.json has no readable \"serial\" — refusing for the" >&2
+    echo "same reason as above (see docs/MANIFEST.md §3)." >&2
+    exit 1
+  }
   # The versions the published document already carries. Used ONLY by --discover,
   # to decide whether a human needs telling. It must never filter the publish
   # path: the manifest is a REPLACEMENT set, not an accumulating one, so dropping
@@ -145,6 +169,11 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' | sort -u)"
 fi
 SERIAL=$((CUR + 1))
+# Belt and braces on the same failure: only a genuine first run may publish 1.
+if [ "$SERIAL" -le 1 ] && [ "$FIRST_RUN" -eq 0 ]; then
+  echo "serial would be $SERIAL on a repo that already has a '$TAG' release — refusing" >&2
+  exit 1
+fi
 
 exists() { curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 "$1" | grep -qE '^(200|302)$'; }
 
