@@ -231,9 +231,16 @@ So the script tells two states apart that used to share a branch:
 
 | State | What happens |
 |---|---|
-| No `manifest` release exists | Genuine first publish. Serial 1. Says so. |
-| The release exists, `manifest.json` will not download | **Refuses**, non-zero, naming the reason. Retry. |
-| The release exists, its `manifest.json` has no readable `serial` | **Refuses**, same reason. |
+| No `manifest.json` on the branch | Genuine first publish. Serial 1. Says so. |
+| It is there and will not read | **Refuses**, non-zero, naming the reason. Retry. |
+| It is there and has no readable `serial` | **Refuses**, same reason. |
+
+`REXENV_MANIFEST_SERIAL_FLOOR=N` forces the next serial above `N`. It exists for
+one case: moving the manifest to a new home, where the read cannot see what the
+OLD home had published. Installs remember the highest serial they ever accepted,
+and a repeated serial is accepted as a no-op and never STORED — so without the
+floor, every entry added since would be lost on the next launch. Set it once
+during a move; leave it unset afterwards.
 
 It was one `gh release view && gh release download` conditional, so one flaky
 call landed in the "first run ever" branch. There is also a belt-and-braces check
@@ -315,15 +322,39 @@ never probes a minor it has never heard of. So when rexenv adds a minor:
 ## 6. Verifying what a user's app will see
 
 ```sh
-curl -sL https://github.com/rexenv/runtimes/releases/download/manifest/manifest.json
-curl -sL https://github.com/rexenv/runtimes/releases/download/manifest/manifest.json.sig
+curl -sL https://raw.githubusercontent.com/rexenv/runtimes/main/manifest.json
+curl -sL https://raw.githubusercontent.com/rexenv/runtimes/main/manifest.json.sig
 ```
 
-Those are the two URLs the app fetches. Nothing else about the release matters to it
-— not the title, not the notes, not the tag's commit. The tag is **moved** on every
-publish, which is safe here and nowhere else in rexenv: these bytes are trusted for
-their signature, not their location. The workflow re-fetches both over the public
-URL after publishing and fails if they are not the bytes it signed.
+Those are the two URLs the app fetches: **files on the default branch**, updated by
+a commit. Safe for the one reason everything here is safe — these bytes are trusted
+for their SIGNATURE, never for their location.
+
+`raw.githubusercontent.com` is CDN-cached for a few minutes, so a just-published
+manifest takes a moment to appear. That is a freshness delay, not a correctness one:
+a stale read is an older signed document, which the serial rule already handles, and
+the app's check is best-effort by contract. **The publisher never reads raw** — it
+reads the serial through the API, because a cached read there would REPEAT a serial,
+and a repeated serial is a document every installed app refuses.
+
+### It was a release, and that broke in production (18 Aug 2026)
+
+Worth keeping, because the failure is not obvious and the fix is not a preference.
+The publish used to delete the `manifest` release and recreate it on the same tag.
+Two things went wrong in one run:
+
+- GitHub's **immutable releases permanently burn a tag name** once a release on it
+  is deleted. `release create` failed with `tag_name was used by an immutable
+  release` — *after* the delete had succeeded. The URL 404'd and stayed 404'ing;
+  deleting the git ref did not help, and a repository ruleset then refused to
+  recreate it. The name is gone for good.
+- Independently, **delete-then-create is an availability hole by construction**.
+  Between the two calls the manifest does not exist, and every app checking in that
+  window sees "couldn't check".
+
+A commit is atomic and has neither problem, and it gains what a moved tag
+deliberately destroyed: git keeps every manifest ever published, so "what was
+signed, and when" is answerable after the fact.
 
 To check a signature by hand:
 
@@ -348,7 +379,7 @@ FastCGI from it.
 | `the signing key is not a readable PEM private key` | The secret is truncated, or was pasted without the `-----BEGIN`/`-----END` lines. Re-paste the whole file. |
 | `our own signature does not verify — refusing to publish` | Nothing was published. The key and the openssl on the runner disagree; check the key is ed25519 (`openssl pkey -in … -text -noout`). |
 | `the 'manifest' release EXISTS but manifest.json could not be downloaded` | A transient `gh`/network failure. Nothing was published, on purpose: continuing would have reset the serial and locked every installed app out of updates forever. Just re-run. |
-| `serial would be 1 on a repo that already has a 'manifest' release` | The same failure caught by the second check. Same answer: re-run. |
+| `serial would be 1 on a repo that already has a manifest` | The same failure caught by the second check. Same answer: re-run. |
 | `REFUSING: the new manifest DROPS entries the published one carries` | Discovery no longer sees a version the published document lists — usually upstream removed or moved an asset. Nothing was published. Re-run; if it persists and you accept losing it, `REXENV_MANIFEST_ALLOW_DROP=1`. |
 | `→ 8.4.24 is incomplete upstream; dropped entirely` | Only some of the four artifacts exist. Correct behaviour — re-run once upstream finishes. |
 | A user's app shows no Update button after a publish | Three candidates, in order: their app's `RELEASE_PUBKEY` predates a key rotation; the published serial is not higher than one they already accepted; or their app's own pin is already ≥ the version offered. |

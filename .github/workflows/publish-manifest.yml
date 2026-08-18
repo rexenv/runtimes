@@ -3,11 +3,12 @@ name: Publish PHP update manifest
 # THE command. Run this when a new PHP patch is out and rexenv users should be
 # offered it: Actions → this workflow → Run workflow. Nothing else to do.
 #
-# It discovers what static-php.dev has published since rexenv's pins, downloads
-# every artifact, hashes it, signs the document with the release key, verifies
-# its own signature, and replaces the `manifest` release. The app fetches those
-# two files, checks the signature against a public key compiled into the binary,
-# and offers an Update button for what survives.
+# It discovers what static-php.dev and Adminer have published since rexenv's
+# pins, downloads every artifact, hashes it, signs the document with the release
+# key, verifies its own signature, and COMMITS the two signed files to the
+# default branch. The app fetches them from there, checks the signature against a
+# public key compiled into the binary, and offers an Update button for what
+# survives.
 #
 # You are told when to run it: `discover-php.yml` checks upstream every morning
 # and opens an issue when there is something here worth publishing. That one holds
@@ -29,7 +30,7 @@ on:
         default: ""
 
 permissions:
-  contents: write # replace the `manifest` release
+  contents: write # commit manifest.json + manifest.json.sig to the branch
 
 concurrency:
   # The serial is read-then-incremented from the published release, so two runs
@@ -92,14 +93,16 @@ jobs:
       - name: What a user's app will see
         if: ${{ inputs.dry_run == false }}
         env:
-          BASE: https://github.com/${{ github.repository }}/releases/download/manifest
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Fetch it back over the PUBLIC URL rather than trusting the local
-          # file: the thing that matters is what the release actually serves.
-          curl -fsSL "$BASE/manifest.json"     > fetched.json
-          curl -fsSL "$BASE/manifest.json.sig" > fetched.sig
+          # Read it back through the API, not `raw.githubusercontent.com`: raw is
+          # CDN-cached for minutes, so a fetch here would compare against the
+          # PREVIOUS document and this check would fail on every successful run.
+          # The API is authoritative the moment the commit lands.
+          gh api "repos/${{ github.repository }}/contents/manifest.json" --jq '.content' \
+            | base64 -d > fetched.json
           cmp -s fetched.json manifest.json \
-            || { echo "::error::the published manifest is not the one this run signed"; exit 1; }
+            || { echo "::error::the committed manifest is not the one this run signed"; exit 1; }
           echo "published serial: $(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' fetched.json)"
           echo "entries: $(grep -o '"name"' fetched.json | wc -l)"

@@ -61,7 +61,6 @@ cd "$(dirname "$0")/.."
 
 KEY="${REXENV_MANIFEST_KEY_FILE:-$HOME/.rexenv/manifest-key.pem}"
 REPO="${REXENV_MANIFEST_REPO:-rexenv/runtimes}"
-TAG="manifest"
 MIN_APP="${REXENV_MANIFEST_MIN_APP:-0.3.0}"
 BASE="https://dl.static-php.dev/static-php-cli/bulk"
 
@@ -168,13 +167,17 @@ fi
 CUR=0
 FIRST_RUN=0
 PUBLISHED=""
-if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+# Read through the API, never `raw.githubusercontent.com`: raw is CDN-cached for
+# minutes, so right after a publish it serves the OLD document — and the serial
+# read from it would then REPEAT a serial, which every installed app refuses.
+if ! gh api "repos/$REPO/contents/manifest.json" --jq '.sha' >/dev/null 2>&1; then
   FIRST_RUN=1
-  echo "no '$TAG' release yet — this is the first publish (serial 1)" >&2
+  echo "no manifest.json on the branch yet — this is the first publish" >&2
 else
-  gh release download "$TAG" --repo "$REPO" --pattern manifest.json --dir "$WORK" 2>/dev/null || {
-    echo "the '$TAG' release EXISTS but manifest.json could not be downloaded." >&2
-    echo "Refusing: publishing now would reset the serial to 1, and every installed" >&2
+  gh api "repos/$REPO/contents/manifest.json" --jq '.content' 2>/dev/null | base64 -d \
+    > "$WORK/manifest.json" || {
+    echo "manifest.json EXISTS on the branch but could not be read." >&2
+    echo "Refusing: publishing now would reset the serial, and every installed" >&2
     echo "rexenv would reject the result as a replay — permanently. Retry." >&2
     exit 1
   }
@@ -193,9 +196,20 @@ else
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' | sort -u)"
 fi
 SERIAL=$((CUR + 1))
-# Belt and braces on the same failure: only a genuine first run may publish 1.
+# A FLOOR, for the one case the read cannot see: the manifest used to be a
+# release asset, and that release is gone (GitHub burns a tag once an immutable
+# release on it is deleted). Installs that accepted serial 1 from the OLD home
+# still remember it, so the file-hosted document has to start above them — and
+# a repeated serial is accepted as a no-op and never STORED, which would lose
+# every entry added since. Set it once during a move; leave it unset after.
+FLOOR="${REXENV_MANIFEST_SERIAL_FLOOR:-0}"
+if [ "$SERIAL" -le "$FLOOR" ]; then
+  echo "serial floor: $SERIAL → $((FLOOR + 1))" >&2
+  SERIAL=$((FLOOR + 1))
+fi
+# Belt and braces on the read failing: only a genuine first run may publish 1.
 if [ "$SERIAL" -le 1 ] && [ "$FIRST_RUN" -eq 0 ]; then
-  echo "serial would be $SERIAL on a repo that already has a '$TAG' release — refusing" >&2
+  echo "serial would be $SERIAL on a repo that already has a manifest — refusing" >&2
   exit 1
 fi
 
@@ -439,15 +453,32 @@ if [ "$DRY" -eq 1 ]; then
   exit 0
 fi
 
-# ── Publish. The tag is MOVED, which is safe HERE and nowhere else in rexenv ──
-# Everywhere else a pin must never change bytes under a URL. These bytes are
-# trusted for their SIGNATURE, not their location, so replacing them is fine —
-# and the serial rule is what stops an OLD one being served in their place.
-gh release delete "$TAG" --repo "$REPO" --yes >/dev/null 2>&1 || true
-gh release create "$TAG" --repo "$REPO" \
-  --title "PHP update manifest" \
-  --notes "Signed manifest of PHP patch builds for rexenv's in-app updates. Serial $SERIAL. Verified in-app against the ed25519 public key compiled into the release; the tag moves on every publish because these bytes are trusted for their signature, not their URL." \
-  manifest.json manifest.json.sig
+# ── Publish: a COMMIT on the default branch ──────────────────────────────────
+#
+# It was a release whose tag was deleted and recreated on every publish. Two
+# things killed that on 18 Aug 2026, in one run: GitHub's immutable releases
+# permanently BURN a tag name once a release on it is deleted, so `release
+# create` failed after the delete had already succeeded and the URL stayed 404;
+# and, independently, delete-then-create is an availability hole by construction
+# — between the two calls the manifest does not exist, and every app checking in
+# that window sees "couldn't check".
+#
+# A commit is atomic and has neither problem. It also gains what the moved tag
+# deliberately destroyed: git keeps every manifest ever published, so "what was
+# signed, and when" is answerable afterwards. Safe for the same reason the moved
+# tag was: these bytes are trusted for their SIGNATURE, never for their location.
+put() {
+  local path="$1" body="$2" sha_arg=()
+  local sha
+  sha="$(gh api "repos/$REPO/contents/$path" --jq '.sha' 2>/dev/null || true)"
+  [ -n "$sha" ] && sha_arg=(-f "sha=$sha")
+  gh api -X PUT "repos/$REPO/contents/$path" \
+    -f "message=publish manifest serial $SERIAL" \
+    -f "content=$(base64 < "$body" | tr -d '\n')" \
+    "${sha_arg[@]}" --jq '.commit.sha' >/dev/null
+}
+put manifest.json manifest.json
+put manifest.json.sig manifest.json.sig
 echo
-echo "Published. Verify what a user's app will see:"
-echo "  curl -sL https://github.com/$REPO/releases/download/$TAG/manifest.json | head -c 200"
+echo "Published. Verify what a user's app will see (raw is CDN-cached ~5 min):"
+echo "  curl -sL https://raw.githubusercontent.com/$REPO/main/manifest.json | head -c 200"

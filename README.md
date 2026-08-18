@@ -22,8 +22,7 @@ key and publishes nothing — it only tells you there is a button worth pressing
 update manifest” → Run workflow.**
 Leave `dry_run` on for the first run, read the log, then run it again with it off.
 It discovers everything newer than rexenv's pins, downloads and hashes all four
-artifacts per version, signs, verifies its own signature, and replaces the
-`manifest` release.
+artifacts per version, signs, verifies its own signature, and commits the two signed files to the default branch.
 
 The same script runs from a laptop:
 
