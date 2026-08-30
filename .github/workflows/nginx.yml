@@ -177,8 +177,16 @@ jobs:
         with:
           # The BINARIES are what this repo built; the source mirrors are upstream's
           # bytes and carry their own provenance from nginx.org and PCRE2.
-          subject-path: "out/nginx-*-macos-aarch64
-            out/nginx-*-macos-x86_64"
+          #
+          # A BLOCK scalar, not a quoted string: multiple subjects are separated
+          # by NEWLINES, and quoting folded these two globs onto one line, which
+          # the action reported as `Could not find subject at path out/… out/…`
+          # (build 1, first publish attempt). It failed before `gh release
+          # create`, so no tag was burned — but the next such slip might not be
+          # so politely ordered.
+          subject-path: |
+            out/nginx-*-macos-aarch64
+            out/nginx-*-macos-x86_64
 
       - name: Publish
         env:
