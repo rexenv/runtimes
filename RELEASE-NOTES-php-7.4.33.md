@@ -4,13 +4,14 @@ Built by `.github/workflows/php-74.yml` from `shivammathur/php-src-backports@5a5
 (mirrored in this release as `php-src-backports-5a576d8eb53e.tar.gz`), via
 static-php-cli 2.8.5.
 
-**macOS floor: the artifacts carry `LC_BUILD_VERSION minos 12.0`** — static-php-cli's
-own default — measured on BOTH slices with `vtool -show-build`, so 12.0 is the floor
-anything linking or shipping these binaries inherits. Earlier builds' notes said
-`MACOSX_DEPLOYMENT_TARGET=11.0` "asserted per artifact": the number was wrong (the
-bytes said 12.0 all along) and the assertion did not exist anywhere in the workflow.
-A wrong floor is not cosmetic — it is inherited by whoever ships these, and it is
-discovered by their users, on the machines that cannot run it.
+**macOS floor: `MACOSX_DEPLOYMENT_TARGET=12.0`, asserted per artifact.**
+`scripts/build-php74.sh` gate 4 fails the build unless every `php` and `php-fpm`'s
+`LC_BUILD_VERSION minos` equals it, per slice. Confirmed on build 6's shipped bytes
+with `vtool -show-build`: 12.0 on both aarch64 and x86_64. Earlier notes said `11.0` —
+the assertion was real, the NUMBER in the prose was a build behind, because 11.0→12.0
+was corrected in the script and nobody carried it here. A floor is inherited by
+whoever ships these binaries and discovered by their users, on the machines that
+cannot run it, so the page that states it has to be the measured one.
 
 **This tag is immutable and will never be re-uploaded.** A rebuild is the next build
 number. See the README for why that matters to anything pinning these hashes.
