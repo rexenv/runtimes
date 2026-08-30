@@ -1,0 +1,190 @@
+name: Build nginx (rexenv's own macOS build)
+
+# Manual only, exactly like the PHP 7.4 build and for the same reason: these
+# artifacts are pinned by hash in rexenv's source, so a build that fires on push
+# would produce releases nobody asked for and tempt someone into re-uploading
+# over a tag — the one thing this repo exists to prevent.
+#
+# WHY rexenv builds its own nginx at all: upstream's darwin binaries declare
+# `minos 26.0` on x86_64 (and, from 1.28.3 up, on arm64 too), eleven majors above
+# the floor rexenv states, which means an Intel user below macOS 26 installs an
+# app whose shared web server may refuse to load. scripts/build-nginx.sh's header
+# carries the measurement that found it.
+on:
+  workflow_dispatch:
+    inputs:
+      nginx_version:
+        description: "nginx version to build (an nginx.org release)."
+        required: true
+        default: "1.30.4"
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,       arch: aarch64 }
+          - { runner: macos-15-intel, arch: x86_64  }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain to install: nginx needs a C compiler and make, which every
+      # macOS runner has. The ONLY dependency is PCRE2 and the script builds it
+      # into the binary from source — which is also why this job takes a minute
+      # where the PHP build takes forty.
+      - name: Build
+        env:
+          NGINX_VERSION: ${{ inputs.nginx_version }}
+        run: bash scripts/build-nginx.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ inputs.nginx_version }}-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: staged }
+
+      # The immutability contract is a repo SETTING, and a setting nobody checks
+      # is exactly the promise it was meant to replace. Assert it before writing
+      # anything, and refuse to publish if it is off.
+      # Three states, not two. "The API did not tell me" is NOT "it is off" —
+      # reporting the second when the first is true is the same species of
+      # dishonest check this gate exists to prevent. Verified 14 Aug 2026: the
+      # REST repo object does not carry `immutable_releases` for this repo, so
+      # the UNKNOWN branch is the live one until GitHub exposes it.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              echo "::error::Settings → General → Releases → Immutable releases."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases for this repo, so this gate"
+              echo "::error::cannot confirm the setting. CHECK IT BY HAND before publishing:"
+              echo "::error::  https://github.com/${{ github.repository }}/settings → Releases → Immutable releases"
+              echo "::error::Then re-run with IMMUTABLE_ACK=confirmed set as a repository variable."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+
+      # A tag is never reused. If it exists, this build is asking to overwrite
+      # bytes somebody has already pinned.
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="nginx-${{ inputs.nginx_version }}-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # The one flag that could quietly undo everything above: it lets a release
+      # asset be replaced in place, which is exactly the property this repo exists
+      # to deny.
+      #
+      # Matches the flag being PASSED TO gh, not the bare word — the first version
+      # grepped for the string and failed on its own step, which is a false
+      # positive but a useful one: it proved the check had never actually run
+      # until the first publish. A guard nobody has seen execute is a guard nobody
+      # knows works.
+      - name: Assert no release asset can be replaced in place
+        run: |
+          # Anchored to the real subcommands, so the guard cannot match its own
+          # prose. Both directions are checked below rather than assumed.
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          # The line below deliberately CONTAINS the hazard, to prove the pattern
+          # still bites. It is excluded by sentinel rather than by a clever
+          # regex, so the exclusion is visible to a reader instead of implied.
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            echo "::error::a rebuild is the NEXT build number, never a re-upload"
+            exit 1
+          fi
+          # Prove the pattern still bites: a known-bad line must be caught.
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/spc-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/spc-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/spc-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
+
+      # NOTE the difference from the PHP build this job is otherwise copied from:
+      # nginx ships as a RAW per-arch binary (that is the shape rexenv's manifest
+      # already pins for it), not a tarball. A `*.tar.gz` glob inherited from
+      # there would have published the SOURCE MIRRORS and silently no binaries.
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Binaries (one per arch) and the source mirrors (both arches fetched
+          # the same bytes — `-n` keeps the first and never overwrites).
+          find staged -type f -name 'nginx-*-macos-*' ! -name '*.sha256' -exec cp -n {} out/ \;
+          find staged -type f -name '*.tar.gz' -exec cp -n {} out/ \;
+          cd out
+          # Exactly two binaries, or something did not build. A publish that is
+          # missing an arch is the arm64-DMG mistake wearing a different hat.
+          COUNT="$(ls nginx-*-macos-* 2>/dev/null | grep -vc '\.sha256$' || true)"
+          [ "$COUNT" = "2" ] || { echo "::error::expected 2 arch binaries, found $COUNT"; exit 1; }
+          shasum -a 256 nginx-*-macos-* *.tar.gz | tee SHA256SUMS
+          for f in nginx-*-macos-* *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      # What actually proves origin. The .sha256 files are documentation; the
+      # hash pinned in rexenv's source is the trust root; this is the receipt
+      # that says which workflow, commit and tag produced these bytes.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          # The BINARIES are what this repo built; the source mirrors are upstream's
+          # bytes and carry their own provenance from nginx.org and PCRE2.
+          subject-path: "out/nginx-*-macos-aarch64
+            out/nginx-*-macos-x86_64"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "nginx ${{ inputs.nginx_version }} (build ${{ inputs.build_number }})" \
+            --notes-file RELEASE-NOTES-nginx.md
