@@ -160,12 +160,21 @@ jobs:
           # Binaries (one per arch) and the source mirrors (both arches fetched
           # the same bytes — `-n` keeps the first and never overwrites).
           find staged -type f -name 'nginx-*-macos-*' ! -name '*.sha256' -exec cp -n {} out/ \;
-          find staged -type f -name '*.tar.gz' -exec cp -n {} out/ \;
+          # Licence archives are PER ARCH (they ride the artifact they cover), so
+          # they are copied before the shared source mirrors and never deduped.
+          find staged -type f -name 'licenses-*.tar.gz' -exec cp -n {} out/ \;
+          find staged -type f -name 'nginx-*.tar.gz' -o -name 'pcre2-*.tar.gz' | xargs -I{} cp -n {} out/
           cd out
           # Exactly two binaries, or something did not build. A publish that is
           # missing an arch is the arm64-DMG mistake wearing a different hat.
           COUNT="$(ls nginx-*-macos-* 2>/dev/null | grep -vc '\.sha256$' || true)"
           [ "$COUNT" = "2" ] || { echo "::error::expected 2 arch binaries, found $COUNT"; exit 1; }
+          # Both licence archives must be here, or a self-hosted artifact ships
+          # without the notices its licences require — and rexenv refuses to
+          # resolve it anyway, so a missing one is a broken release, not a lapse.
+          for a in aarch64 x86_64; do
+            [ -f "licenses-$a.tar.gz" ] || { echo "::error::licenses-$a.tar.gz missing"; exit 1; }
+          done
           shasum -a 256 nginx-*-macos-* *.tar.gz | tee SHA256SUMS
           for f in nginx-*-macos-* *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done
           ls -lh

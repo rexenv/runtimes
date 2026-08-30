@@ -190,11 +190,32 @@ wait "$NGPID" 2>/dev/null || true
 grep -q "probe.rex" "$P/logs/access.log" || { echo "::error::log_format rexenv wrote nothing parseable"; exit 1; }
 echo "served: static=$STATIC dotfile=$DOT wildcard=$WILD, access log has host lines"
 
+# ─── Licences ────────────────────────────────────────────────────────────────
+# Publishing these bytes makes rexenv the DISTRIBUTOR, and both licences here are
+# redistribution-with-notice licences (nginx: BSD-2-Clause; PCRE2: BSD-3-Clause).
+# rexenv REFUSES to resolve a self-hosted artifact that has no licence archive
+# beside it — a guard written for the self-built PHP 7.4 and inherited here the
+# moment nginx moved to our own infrastructure. So this is not paperwork: without
+# it the binary does not load.
+say "licences"
+LIC="$WORK/licenses"
+mkdir -p "$LIC"
+# Both projects spell it differently and PCRE2 splits it in two, so each file is
+# named EXPLICITLY rather than globbed: a glob that silently matches nothing is
+# how a licence archive ends up empty and passes.
+cp "LICENSE" "$LIC/nginx.LICENSE"                        # nginx: BSD-2-Clause
+cp "../pcre2-${PCRE2_VERSION}/LICENCE.md" "$LIC/pcre2.LICENCE.md"  # PCRE2: BSD-3-Clause
+cp "../pcre2-${PCRE2_VERSION}/COPYING" "$LIC/pcre2.COPYING"
+for f in "$LIC"/*; do [ -s "$f" ] || { echo "::error::empty licence file: $f"; exit 1; }; done
+( cd "$WORK" && tar -czf "$OUT/licenses-${ARCH}.tar.gz" licenses )
+echo "licences: $(ls "$LIC" | tr '\n' ' ')"
+
 # ─── Package ─────────────────────────────────────────────────────────────────
 say "package"
 mkdir -p "$OUT"
 cp "$BIN" "$OUT/nginx-${NGINX_VERSION}-macos-${ARCH}"
 ( cd "$OUT" && shasum -a 256 "nginx-${NGINX_VERSION}-macos-${ARCH}" > "nginx-${NGINX_VERSION}-macos-${ARCH}.sha256" )
+( cd "$OUT" && shasum -a 256 "licenses-${ARCH}.tar.gz" > "licenses-${ARCH}.tar.gz.sha256" )
 ls -lh "$OUT"
 
 say "record"
