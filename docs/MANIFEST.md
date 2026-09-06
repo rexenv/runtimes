@@ -289,9 +289,17 @@ Paste it into the secret field and nowhere else.
   and ship an app release. Old manifests stop verifying the moment users update —
   which is the property that makes a stolen key survivable, and the reason the
   public half is compiled in rather than fetched.
-- **Order matters:** app release with the new pubkey **first**, then publish. The
-  script refuses if the signing key is not the one the app pins, which is the check
-  that catches a rotation done backwards.
+- **Order matters:** app release with the new pubkey **first**, then update
+  `EXPECTED_PUBKEY` in **both** `scripts/publish-manifest.sh` and
+  `scripts/publish-app-manifest.sh`, then publish. Both refuse to sign with a key
+  the shipped app does not pin, which is the check that catches a rotation done
+  backwards. (That refusal was described here before it existed, and was added on
+  7 September 2026 — a wrong key had until then signed a manifest every install
+  rejected in silence, the one failure mode with no symptom.)
+
+The same key signs the **app** update manifest — the descriptor rexenv uses to
+replace its own bundle. See [APP-MANIFEST.md](APP-MANIFEST.md) for that document
+and why it is separate.
 
 If the key is lost, a new one plus an app release is the only path. Keep an
 encrypted backup.

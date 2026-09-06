@@ -60,6 +60,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 KEY="${REXENV_MANIFEST_KEY_FILE:-$HOME/.rexenv/manifest-key.pem}"
+# The public half rexenv compiles in (RELEASE_PUBKEY in core/updates.rs). Public
+# by definition — pinned here as a tripwire, not a secret. Signing with any other
+# key publishes a manifest every install refuses in SILENCE, which is exactly what
+# a forged one looks like from the outside, so nothing anywhere would report it.
+# docs/MANIFEST.md §4 promised this check before it existed; now it exists.
+EXPECTED_PUBKEY="faa52f961af3e0542d836ab539823f598ef88b976055809f73247f88af13cb12"
 REPO="${REXENV_MANIFEST_REPO:-rexenv/runtimes}"
 MIN_APP="${REXENV_MANIFEST_MIN_APP:-0.3.0}"
 BASE="https://dl.static-php.dev/static-php-cli/bulk"
@@ -150,6 +156,18 @@ openssl pkey -in "$KEY" -noout 2>/dev/null || {
   echo "the signing key is not a readable PEM private key" >&2
   exit 1
 }
+# And it must be the key shipped builds trust — same reason, one step further:
+# a WRONG key signs perfectly well and publishes a manifest every install refuses
+# in silence. Nothing upstream reports that; users simply stop being offered PHP.
+PUB="$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | xxd -p -c 64)"
+if [ "$PUB" != "$EXPECTED_PUBKEY" ]; then
+  echo "this key is not the one shipped rexenv builds trust." >&2
+  echo "  signing key: $PUB" >&2
+  echo "  app pins:    $EXPECTED_PUBKEY" >&2
+  echo "  Rotation order is: ship an app release carrying the new public half FIRST," >&2
+  echo "  then update EXPECTED_PUBKEY in this script and in publish-app-manifest.sh." >&2
+  exit 1
+fi
 fi
 
 # ── Serial: read what is published, increment ─────────────────────────────────
@@ -445,12 +463,9 @@ openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in "$KEY" -pubout) \
   -rawin -in "$OUT_DIR/manifest.json" -sigfile "$WORK/sig.bin" >/dev/null \
   || { echo "our own signature does not verify — refusing to publish" >&2; exit 1; }
 
-PUB="$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | xxd -p -c 64)"
 echo
 echo "serial $CUR → $SERIAL   versions: ${KEPT[*]}   entries: $(( $(grep -o '"name"' "$OUT_DIR/manifest.json" | wc -l) ))"
-echo "signed with public key $PUB"
-echo "  ↳ this MUST equal RELEASE_PUBKEY in rexenv's src-tauri/src/core/updates.rs,"
-echo "    or every shipped build will ignore this manifest."
+echo "signed with public key $PUB (matches the key shipped builds pin)"
 
 if [ "$DRY" -eq 1 ]; then
   echo

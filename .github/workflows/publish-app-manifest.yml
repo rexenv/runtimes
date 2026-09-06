@@ -1,0 +1,121 @@
+name: Publish app update manifest
+
+# The SECOND click of a rexenv release, and the one that is easy to forget.
+#
+# Publishing the tap release makes the dmg downloadable, bumps the cask and
+# updates the website. It does NOT tell a single installed rexenv that a newer
+# version exists — that is this workflow. Until it runs, every copy in the world
+# keeps answering "the version you are running is what you are running", and
+# nothing anywhere reports a problem.
+#
+# It reads the tap's latest PUBLISHED release, downloads the update archive,
+# hashes what it downloaded (never trusting the API's digest alone), signs the
+# descriptor with the release key, verifies its own signature, and commits
+# `app-manifest.json` + `.sig` to the default branch. rexenv fetches those from a
+# URL compiled into the binary and checks the signature against a public key
+# compiled in beside it.
+#
+# A DRAFT release is invisible here, by construction: `releases/latest` excludes
+# drafts and prereleases. That is what makes rexenv's human §A gate protect
+# in-app updaters for free — nothing can be offered before a person published it.
+#
+# Manual only, and `dry_run` defaults ON, for the same reason as the PHP
+# manifest: this publishes a document every installed rexenv trusts, and a run
+# that fires on push is a supply-chain incident waiting for a bad merge.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Download, hash and sign — publish nothing. Leave ON for the first look."
+        type: boolean
+        default: true
+      version:
+        description: "Optional: publish this x.y.z instead of the tap's latest (e.g. '0.6.1')."
+        required: false
+        default: ""
+
+permissions:
+  contents: write # commit app-manifest.json + .sig to the branch
+
+concurrency:
+  # The serial is read-then-incremented from the committed document, so two runs
+  # at once would compute the same next serial and the second would publish a
+  # document every app refuses as a replay. Queue instead.
+  #
+  # A SEPARATE group from publish-manifest: the two documents have separate
+  # serials, and making a PHP publish wait on an app publish would be a queue
+  # nobody asked for.
+  group: publish-app-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Gate the SECRET, not the workflow. This key can make every rexenv install
+    # replace ITSELF with bytes of the holder's choosing — a strictly larger
+    # grant than the PHP manifest's, and the same key. Reading it needs a human
+    # approval GitHub logs. `manifest-signing` in Settings → Environments, with
+    # required reviewers, holding REXENV_MANIFEST_KEY — NOT a repo secret, where
+    # any workflow on any branch could read it.
+    environment: manifest-signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REXENV_MANIFEST_KEY: ${{ secrets.REXENV_MANIFEST_KEY }}
+          # Through `env`, never interpolated into the script body: `${{ }}` is
+          # substituted before the shell sees the line, so an input containing
+          # `; curl …` would execute — in the one job on this repo that holds
+          # the signing key.
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [ -n "$REXENV_MANIFEST_KEY" ] || {
+            echo "::error::REXENV_MANIFEST_KEY is not set in the manifest-signing environment."
+            echo "It is the same key the PHP manifest uses — see docs/MANIFEST.md §4."
+            exit 1
+          }
+          # if, not `[ … ] && …`: under `set -e` a false test IS a failing
+          # command, so the && form would abort the job on every real publish —
+          # green nowhere, published nothing, and the log stops mid-step.
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          # Quoted: this is one version, and the script validates it against
+          # x.y.z before it reaches any command.
+          if [ -n "$VERSION" ]; then args+=("$VERSION"); fi
+          ./scripts/publish-app-manifest.sh "${args[@]}"
+
+      # Keep it whatever the outcome, so a dry run can be inspected and a
+      # published one has a record beside the log.
+      - name: Keep the descriptor as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-manifest
+          path: |
+            app-manifest.json
+            app-manifest.json.sig
+          if-no-files-found: ignore
+
+      - name: What a user's app will see
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Read it back through the API, not raw.githubusercontent.com: raw is
+          # CDN-cached for minutes, so a fetch here would compare against the
+          # PREVIOUS document and fail on every successful run. The API is
+          # authoritative the moment the commit lands.
+          gh api "repos/${{ github.repository }}/contents/app-manifest.json" --jq '.content' \
+            | base64 -d > fetched.json
+          cmp -s fetched.json app-manifest.json \
+            || { echo "::error::the committed descriptor is not the one this run signed"; exit 1; }
+          echo "published serial: $(sed -n 's/.*\"serial\"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' fetched.json)"
+          echo "offering rexenv $(sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' fetched.json | head -1)"
+          echo
+          echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh"

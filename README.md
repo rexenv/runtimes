@@ -31,6 +31,14 @@ The same script runs from a laptop:
 ./scripts/publish-manifest.sh             # then publish
 ```
 
+**And it publishes the signed app update manifest** — the document that lets an
+installed rexenv update ITSELF, which is how anyone who installed from the dmg
+rather than Homebrew ever gets a new version. Publishing a rexenv release is two
+clicks in two repos: the tap release, then **Actions → “Publish app update
+manifest”** here. Skip the second and every installed copy keeps saying it is
+already current, with nothing anywhere reporting a problem. See
+**[docs/APP-MANIFEST.md](docs/APP-MANIFEST.md)**.
+
 Read **[docs/MANIFEST.md](docs/MANIFEST.md)** before the first run — particularly
 the four limits the app enforces on every entry, the monotonic serial, and §4 on the
 signing key, which is the most valuable secret in the project and lives in a
