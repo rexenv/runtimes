@@ -224,7 +224,7 @@ fi
 cp "$WORK/$DOC" "$DOC"
 cp "$WORK/$SIG" "$SIG"
 git add "$DOC" "$SIG"
-git -c user.name="rexenv publisher" -c user.email="noreply@rexenv.dev" \
+git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" \
   commit -q -m "app-manifest: rexenv $V (serial $SERIAL)"
 git push -q
 echo
