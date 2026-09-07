@@ -124,9 +124,9 @@ ASSET="rexenv_${V}_universal.app.tar.gz"
 REL="$(gh api "repos/$TAP_REPO/releases/tags/$TAG" 2>/dev/null)" \
   || fail "no release $TAG on $TAP_REPO (a draft is invisible here, which is the point)"
 
-DIGEST="$(printf '%s' "$REL" | jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .digest // ""' | head -1)"
+DIGEST="$(printf '%s' "$REL" | jq -r --arg n "$ASSET" 'first(.assets[] | select(.name == $n) | .digest) // ""')"
 DIGEST="${DIGEST#sha256:}"
-URL="$(printf '%s' "$REL" | jq -r --arg n "$ASSET" '.assets[] | select(.name == $n) | .browser_download_url // ""' | head -1)"
+URL="$(printf '%s' "$REL" | jq -r --arg n "$ASSET" 'first(.assets[] | select(.name == $n) | .browser_download_url) // ""')"
 PUBLISHED_AT="$(printf '%s' "$REL" | jq -r '.published_at // ""')"
 
 if [ -z "$URL" ]; then
@@ -146,7 +146,13 @@ if [ -n "$DIGEST" ] && [ "$DIGEST" != "$SHA" ]; then
 fi
 # The archive must be the shape rexenv's extractor expects. Checked HERE too,
 # because this is the last point before a signature makes it trusted.
-first="$(tar -tzf "$WORK/$ASSET" | head -1)"
+# Listed in FULL and sliced afterwards, never `tar … | head -1`: head closes the
+# pipe on the first line, GNU tar takes the write error and exits 2, and under
+# `set -o pipefail` that kills the whole run. bsdtar on macOS stays quiet about
+# it, so this failed only on the Linux runner — found by the first dry run,
+# 7 Sep 2026, which is what a dry run is for.
+listing="$(tar -tzf "$WORK/$ASSET")"
+first="${listing%%$'\n'*}"
 [ "$first" = "rexenv.app/" ] || fail "the archive's first entry is '$first', not 'rexenv.app/'"
 
 # ── 3. The serial: read the published one and increment ─────────────────────
