@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # spc itself runs on PHP >= 8.4. Nothing about the HOST php reaches the
       # artifact — it only executes the builder.
@@ -79,7 +79,7 @@ jobs:
     if: inputs.publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with: { path: staged }
 

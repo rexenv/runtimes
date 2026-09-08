@@ -51,7 +51,7 @@ jobs:
     # on any branch could read it.
     environment: manifest-signing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Publish
         env:

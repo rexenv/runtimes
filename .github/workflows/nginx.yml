@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No toolchain to install: nginx needs a C compiler and make, which every
       # macOS runner has. The ONLY dependency is PCRE2 and the script builds it
@@ -73,7 +73,7 @@ jobs:
     if: inputs.publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with: { path: staged }
 
