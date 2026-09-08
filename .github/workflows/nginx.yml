@@ -53,7 +53,7 @@ jobs:
           NGINX_VERSION: ${{ inputs.nginx_version }}
         run: bash scripts/build-nginx.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: nginx-${{ inputs.nginx_version }}-${{ matrix.arch }}
           path: out/
@@ -61,7 +61,7 @@ jobs:
 
       - name: Keep the failure logs
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: debug-${{ matrix.arch }}
           path: out/
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with: { path: staged }
 
       # The immutability contract is a repo SETTING, and a setting nobody checks
@@ -182,7 +182,7 @@ jobs:
       # What actually proves origin. The .sha256 files are documentation; the
       # hash pinned in rexenv's source is the trust root; this is the receipt
       # that says which workflow, commit and tag produced these bytes.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           # The BINARIES are what this repo built; the source mirrors are upstream's
           # bytes and carry their own provenance from nginx.org and PCRE2.

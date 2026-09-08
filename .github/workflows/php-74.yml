@@ -56,7 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: php-7.4.33-${{ matrix.arch }}
           path: out/
@@ -67,7 +67,7 @@ jobs:
       # another 40-minute build.
       - name: Keep the failure logs
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: debug-${{ matrix.arch }}
           path: out/debug/
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with: { path: staged }
 
       # The immutability contract is a repo SETTING, and a setting nobody checks
@@ -169,7 +169,7 @@ jobs:
       # What actually proves origin. The .sha256 files are documentation; the
       # hash pinned in rexenv's source is the trust root; this is the receipt
       # that says which workflow, commit and tag produced these bytes.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: "out/*.tar.gz"
 

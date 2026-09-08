@@ -82,7 +82,7 @@ jobs:
       # dry run can be inspected and a published one has a record beside the log.
       - name: Keep the manifest as an artifact
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: manifest
           path: |
