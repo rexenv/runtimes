@@ -75,9 +75,14 @@ jobs:
           # set as last time → stay silent, so a version that sits unpublished for
           # a week does not generate seven notifications.
           MARKER="<!-- discovered: $VERSIONS -->"
-          BODY="$MARKER
+          # Heredoc, not a double-quoted string: the body contains backticks, and
+          # in "..." the shell would run `php:8.4.24` as a command. The delimiter is
+          # unquoted so $REPO/$VERSIONS still expand; every literal backtick is
+          # escaped for the same reason.
+          BODY="$(cat <<MD
+          $MARKER
           Upstream has published releases that rexenv does not yet offer. Each is
-          qualified by family — `php:8.4.24`, `adminer:6.0.1` — because unqualified
+          qualified by family — \`php:8.4.24\`, \`adminer:6.0.1\` — because unqualified
           the list reads "8.4.24 6.0.1" and nobody can tell which project is which:
 
           **$VERSIONS**
@@ -92,7 +97,9 @@ jobs:
 
           This issue is maintained by \`.github/workflows/discover-php.yml\`. It is
           rewritten when the upstream list changes and stays quiet when it does not;
-          close it once the manifest is published."
+          close it once the manifest is published.
+          MD
+          )"
 
           NUM="$(gh issue list --repo "$REPO" --label "$LABEL" --state open -L 1 \
                  --json number -q '.[0].number // empty')"
