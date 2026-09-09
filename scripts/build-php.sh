@@ -106,6 +106,17 @@ LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick
 # present AND it must connect.
 REQUIRED_EXTS="phar mysqli pdo_mysql pdo_pgsql pgsql curl gd mbstring json xml dom openssl zip sodium intl posix opcache"
 
+# Everything this script reads from the repository is resolved to an ABSOLUTE
+# path HERE, before the first `cd`. The parity gate below took its reference as
+# `$(dirname $0)/../docs/...`, which is correct where the script starts and
+# meaningless after `cd "$WORK"` — so in CI the file was "not found" and the gate
+# printed a warning and passed. It was green on the laptop only because it was
+# invoked by absolute path. A guard whose input path can go missing is a guard
+# that reports success when it has checked nothing.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PARITY_REF="$REPO_ROOT/docs/bulk-modules-8.x.txt"
+PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
+
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
 # ─── Toolchain ───────────────────────────────────────────────────────────────
@@ -188,8 +199,12 @@ echo "modules ($(echo "$MODS" | grep -c .)): $(echo "$MODS" | tr '\n' ' ')"
 #    invisible in a green build unless something compares the two lists. The
 #    reference list is committed beside this script, generated from a shipped
 #    bulk binary; anything in it that is missing here fails the build.
-REF="$(dirname "$0")/../docs/bulk-modules-8.x.txt"
-if [ -f "$REF" ]; then
+REF="$PARITY_REF"
+# A missing reference is a BUILD FAILURE, not a warning. The first version
+# warned and carried on, which is how it passed twice in CI having compared
+# nothing (run 34335791126).
+[ -f "$REF" ] || { echo "::error::no parity reference at $REF — this gate cannot run, and it is not optional"; exit 1; }
+if true; then
   lost=""
   while read -r m; do
     # The reference file carries its own provenance in comments — skip those and
@@ -203,9 +218,7 @@ if [ -f "$REF" ]; then
     echo "::error::and remove them from $REF in the same commit."
     exit 1
   fi
-  echo "parity: every module in $(basename "$REF") is present"
-else
-  echo "::warning::no parity reference at $REF — cannot prove this build lost nothing"
+  echo "parity: every module in $(basename "$REF") is present ($(grep -cvE '^\s*(#|$)' "$REF") compared)"
 fi
 
 # 4. The dylib closure is what rexenv's relink_to_system_libs accepts. Anything
@@ -322,7 +335,7 @@ fi
 say "licences"
 LIC="$OUT/licenses"
 mkdir -p "$LIC"
-cp "$(dirname "$0")/../licenses/PHP-3.01.txt" "$LIC/" 2>/dev/null || true
+cp "$PHP_LICENSE" "$LIC/" 2>/dev/null || true
 found=0
 for d in source/*/; do
   name="$(basename "$d")"
