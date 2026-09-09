@@ -25,6 +25,10 @@ on:
         description: "Publish a release. Off = build + run the gates only (use this first)."
         type: boolean
         default: false
+      skip_exts:
+        description: "TRIAGE ONLY: extensions to leave out (comma-separated). A build that uses this cannot be published."
+        required: false
+        default: ""
       prebuilt:
         description: "Use spc's pre-built dependency archives. Off = build every dep from source (much slower; use to rule them out as a failure cause)."
         type: boolean
@@ -105,6 +109,7 @@ jobs:
       - name: Build
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SKIP_EXTS: ${{ inputs.skip_exts }}
         run: bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
 
       - uses: actions/upload-artifact@v7
@@ -129,6 +134,14 @@ jobs:
     if: inputs.publish
     runs-on: ubuntu-latest
     steps:
+      # A triage build dropped extensions on purpose. Publishing one would ship a
+      # binary missing something the parity list says users have, with a green
+      # run behind it.
+      - name: Refuse to publish a triage build
+        if: inputs.skip_exts != ''
+        run: |
+          echo "::error::skip_exts was set (${{ inputs.skip_exts }}) — triage builds are not publishable"
+          exit 1
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with: { path: staged }

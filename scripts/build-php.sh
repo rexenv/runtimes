@@ -188,9 +188,20 @@ BASE_EXTS="apcu bcmath bz2 calendar ctype curl dba dom event exif fileinfo filte
 # cannot carry it either).
 ALWAYS_EXTS="pdo_pgsql pdo_sqlite"
 
+# TRIAGE ONLY: extensions to leave out of this build, comma-separated, via the
+# environment. It exists because "which extension makes the built binary abort on
+# ONE arch" is a question only a build can answer, and bisecting it by editing the
+# script means a commit per guess. A build that uses it is NOT publishable — the
+# workflow refuses — because it is by definition a build that dropped something
+# the parity list says users have.
+SKIP_EXTS="${SKIP_EXTS:-}"
+
 [ -f "$PARITY_REF" ] || { echo "::error::no parity reference at $PARITY_REF — it decides the extension set AND the gate; refusing to guess"; exit 1; }
 EXTS=""
 for e in $BASE_EXTS; do
+  case ",$SKIP_EXTS," in
+    *",$e,"*) echo "::warning::SKIPPING $e — triage build, not publishable"; continue ;;
+  esac
   if grep -qxF "$e" "$PARITY_REF"; then
     EXTS="${EXTS:+$EXTS,}$e"
   else
@@ -348,6 +359,7 @@ if true; then
     # The reference file carries its own provenance in comments — skip those and
     # blanks, or the gate compares the build against English prose (it did).
     case "$m" in ''|'#'*) continue ;; esac
+    case ",$SKIP_EXTS," in *",$m,"*) continue ;; esac
     echo "$MODS" | grep -qx "$m" || lost="$lost $m"
   done < "$REF"
   if [ -n "$lost" ]; then
@@ -356,6 +368,7 @@ if true; then
     echo "::error::and remove them from $REF in the same commit."
     exit 1
   fi
+  [ -z "$SKIP_EXTS" ] || echo "::warning::parity EXCLUDES the skipped set ($SKIP_EXTS) — triage only"
   echo "parity: every module in $(basename "$REF") is present ($(grep -cvE '^\s*(#|$)' "$REF") compared)"
 fi
 
