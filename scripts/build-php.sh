@@ -110,14 +110,49 @@ PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
 # cleared the first wall. Upstream's bulk 8.0/8.1 DO carry swoole, so dropping it
 # would be a parity loss; they carry an older release, and so do these.
 SWOOLE_5="https://github.com/swoole/swoole-src/archive/refs/tags/v5.1.7.tar.gz"
-CUSTOM_URLS=""
+# One --custom-url FLAG PER SOURCE. Comma-joining them makes spc treat the whole
+# string as a single URL: it fetched
+# "…/v5.1.7.tar.gz,php-src:file:///…patched.tar.gz" and 404'd, having reported it
+# as "Downloading source swoole from custom url".
+#
+# Same shape for protobuf: spc pins PECL protobuf 5.34.1, whose sources use
+# Zend API that PHP 8.0 does not have (`ext/protobuf/map.c:613: expected
+# identifier`, then a wall of undeclared arginfo symbols). Upstream's bulk 8.0
+# carries protobuf too, on an older release — so, again, an older release here
+# rather than a dropped extension.
+PROTOBUF_3="https://pecl.php.net/get/protobuf-3.25.3.tgz"
+CUSTOM_URL_ARGS=()
 case "$PHP_VERSION" in
-  8.0.*|8.1.*) CUSTOM_URLS="swoole:$SWOOLE_5" ;;
+  8.0.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_5" --custom-url="protobuf:$PROTOBUF_3") ;;
+  8.1.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_5") ;;
 esac
 
+# PHP 8.0 needs one more: `ext/libxml/libxml.c:431` writes
+# `int compression ATTRIBUTE_UNUSED)`, and ATTRIBUTE_UNUSED is a libxml2 macro
+# that libxml2 2.12 took out of the public headers (we build against 2.15). PHP
+# 8.1 rewrote those signatures; 8.0, EOL since Nov 2023, never got the change.
+# Supplying the macro is the whole fix — no source patch, and it cannot affect
+# any other minor because it is only defined here.
+#
+# It is defined EMPTY, not as `__attribute__((unused))`, and that is not a style
+# choice: this flag travels through make into a `/bin/sh -c` command line, where
+# the parentheses ended the word — every compile died with
+# `syntax error near unexpected token '('` before clang saw anything. Empty
+# expands `int compression ATTRIBUTE_UNUSED)` to `int compression )`, which is
+# what the parameter needed to be all along.
+OLD_MINOR_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -Wno-strict-prototypes -std=gnu17 -Wno-incompatible-function-pointer-types"
 case "$PHP_VERSION" in
-  8.0.*|8.1.*)
-    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -Wno-strict-prototypes -std=gnu17 -Wno-incompatible-function-pointer-types"
+  8.1.*)
+    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="$OLD_MINOR_CFLAGS"
+    ;;
+  8.0.*)
+    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="$OLD_MINOR_CFLAGS -DATTRIBUTE_UNUSED="
+    # 8.0 also needs a PATCHED SOURCE — see the patch step below. Its `intl`
+    # compiles as C++11 while the ICU this links (78) needs C++17 in its own
+    # headers, and neither `CXXFLAGS` in the environment nor `CXXFLAGS=…` as a
+    # configure argument changes that (both measured, same errors): ext/intl
+    # asks for its standard itself, and its flag lands last.
+    PATCH_INTL_CXX17=1
     ;;
 esac
 
@@ -203,10 +238,47 @@ tar xzf spc.tar.gz && chmod +x spc
 ./spc --version
 
 # ─── Build ───────────────────────────────────────────────────────────────────
+# ─── PHP 8.0: a one-line source patch, for the same reason 7.4 has one ───────
+#
+# `ext/intl/config.m4` in 8.0 says `PHP_CXX_COMPILE_STDCXX(11, mandatory, …)`,
+# so intl compiles as C++11 — while the ICU this build links (78) needs C++17 in
+# its own headers (`unicode/stringpiece.h:135: no template named 'is_same_v'`).
+# PHP 8.1 asks for 17 when ICU requires it; 8.0, EOL since Nov 2023, never got
+# that change, so the patch IS what 8.1 does, applied to 8.0.
+#
+# Substituted on the RELEASE TARBALL including its pre-generated `configure`,
+# rather than regenerating with autoconf: php.net ships `configure` already
+# built, so patching `config.m4` alone would change nothing — a quiet no-op
+# instead of a fix. The number of substitutions is asserted for the same reason:
+# a tarball that stops containing the string must fail the build rather than
+# build the old way and be discovered by whoever needs intl.
+if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
+  say "patch: intl C++11 → C++17 (PHP $PHP_VERSION)"
+  SRC_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz"
+  SRC_SHA256="216ab305737a5d392107112d618a755dc5df42058226f1670e9db90e77d777d9"  # php-8.0.30.tar.xz, php.net
+  curl -fSL -o php-src.tar.xz "$SRC_URL"
+  echo "$SRC_SHA256  php-src.tar.xz" | shasum -a 256 -c - \
+    || { echo "::error::php-src checksum mismatch — refusing to patch an unpinned source"; exit 1; }
+  rm -rf patched && mkdir patched && tar -C patched -xf php-src.tar.xz
+  SRC_DIR="patched/php-${PHP_VERSION}"
+  HITS=0
+  for f in "$SRC_DIR/configure" "$SRC_DIR/ext/intl/config.m4"; do
+    n="$(grep -c -e '-std=c++11' -e 'COMPILE_STDCXX(11' "$f" || true)"
+    HITS=$((HITS + n))
+    sed -i '' -e 's/-std=c++11/-std=c++17/g' -e 's/COMPILE_STDCXX(11/COMPILE_STDCXX(17/g' "$f"
+  done
+  [ "$HITS" -gt 0 ] || { echo "::error::found no C++11 request to raise in $PHP_VERSION — the patch would be a no-op"; exit 1; }
+  echo "  raised $HITS C++11 requests to C++17"
+  tar -C patched -czf php-src-patched.tar.gz "php-${PHP_VERSION}"
+  rm -rf patched
+  CUSTOM_URL_ARGS+=(--custom-url="php-src:file://$(pwd)/php-src-patched.tar.gz")
+  echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
+fi
+
 say "download sources"
 ./spc download \
   --with-php="${PHP_VERSION}" \
-  ${CUSTOM_URLS:+--custom-url="$CUSTOM_URLS"} \
+  ${CUSTOM_URL_ARGS[@]+"${CUSTOM_URL_ARGS[@]}"} \
   --for-extensions="$EXTS" \
   --for-libs="$LIBS" \
   $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \

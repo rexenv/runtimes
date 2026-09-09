@@ -63,6 +63,16 @@ gh attestation verify php-8.3.33-cli-macos-aarch64.tar.gz --repo rexenv/runtimes
 
 - **OpenSSL 3's legacy provider is off**, so `openssl_encrypt` with `bf-cbc`, `rc4` or
   `des-*` fails. True of the static builds these replace as well — not a regression.
+- **PHP 8.0 is built from a patched source.** Its `ext/intl` asks for C++11
+  (`PHP_CXX_COMPILE_STDCXX(11, mandatory, …)`) and the ICU this links (78) needs
+  C++17 in its own headers, so the build raises that request to 17 — which is
+  exactly what PHP 8.1 does when ICU requires it, applied to a version that never
+  got the change. The substitution runs on php.net's release tarball INCLUDING its
+  pre-generated `configure` (patching `config.m4` alone would be a no-op), the
+  tarball is pinned by SHA-256, and the number of substitutions is asserted.
+- **PHP 8.0 carries protobuf 3.25.3**, not the 5.34.1 the newer minors get: the
+  newer sources use Zend API 8.0 does not have. Upstream's bulk 8.0 ships an older
+  protobuf too, so this is parity.
 - **PHP 8.0 and 8.1 carry swoole 5.1.7**, not the 6.x the newer minors get: swoole 6
   refuses to compile below PHP 8.2. Upstream's bulk builds for those minors ship an
   older swoole too, so this is parity rather than a divergence.
