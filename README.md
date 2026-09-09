@@ -47,7 +47,7 @@ reviewer-gated Environment for that reason.
 | Artifact | Why it is built here |
 |---|---|
 | **PHP 7.4.33** (cli + fpm, macOS arm64 + x86_64) | static-php.dev publishes 8.0–8.5 only. Every `dl.static-php.dev/.../php-7.4.3*` URL 404s. Homebrew has `php@7.4` bottles, but they bake `/opt/homebrew` paths for both `php.ini` **and** `OPENSSLDIR` — so TLS fails on a Mac without Homebrew, which is exactly rexenv's target machine. |
-| **PHP 8.x** (cli + fpm, macOS arm64 + x86_64) | static-php.dev's "bulk" builds carry `pgsql` and **no `pdo_pgsql`** — while their PDO advertises `pgsql`, so a connection is accepted and then stalls until the server times it out. Laravel's `pgsql` driver IS that PDO call. Measured against PostgreSQL 16/17/18 on 9 Sep 2026; these builds add the driver and PROVE it by connecting (`scripts/build-php.sh` gate 6). Extension parity with the bulk builds is itself a gate — `docs/bulk-modules-8.x.txt`. |
+| **PHP 8.x** (cli + fpm, macOS arm64 + x86_64) | static-php.dev's "bulk" builds carry `pgsql` and **no `pdo_pgsql`** — while their PDO advertises `pgsql`, so a connection is accepted and then stalls until the server times it out. Laravel's `pgsql` driver IS that PDO call. Measured against PostgreSQL 16/17/18 on 9 Sep 2026; these builds add the driver and PROVE it by connecting (`scripts/build-php.sh` gate 6). Extension parity with the bulk builds is itself a gate — `docs/bulk-modules-<minor>.txt`. |
 
 ## The pin contract
 

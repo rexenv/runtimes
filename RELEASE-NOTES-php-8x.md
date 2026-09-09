@@ -3,8 +3,12 @@ working `pdo_pgsql`**.
 
 Built by `.github/workflows/php.yml` via static-php-cli 2.8.5, from php.net sources
 spc downloads and pins. Extension parity with the static-php.dev "bulk" builds these
-replace is a BUILD GATE, not a claim: `docs/bulk-modules-8.x.txt` is generated from a
-shipped bulk artifact, and the build fails if anything in it is missing here.
+replace is a BUILD GATE, not a claim: `docs/bulk-modules-<minor>.txt` is generated from
+the shipped bulk artifact FOR THAT MINOR, the build derives its extension set from it,
+and fails if anything in it is missing from the result. Per minor because the upstream
+sets are not the same — 8.0's has no `opentelemetry`, 8.5's has two modules the others
+lack — and one shared list would demand the impossible of the old minors while letting
+real losses through on the new ones.
 
 ## Why this exists
 
@@ -59,6 +63,9 @@ gh attestation verify php-8.3.33-cli-macos-aarch64.tar.gz --repo rexenv/runtimes
 
 - **OpenSSL 3's legacy provider is off**, so `openssl_encrypt` with `bf-cbc`, `rc4` or
   `des-*` fails. True of the static builds these replace as well — not a regression.
+- **PHP 8.0 and 8.1 carry swoole 5.1.7**, not the 6.x the newer minors get: swoole 6
+  refuses to compile below PHP 8.2. Upstream's bulk builds for those minors ship an
+  older swoole too, so this is parity rather than a divergence.
 - **`pdo_sqlite` does not appear in `php -m`** (it is a builtin PDO driver). It is in
   the extension set and `PDO::getAvailableDrivers()` lists `sqlite`; after this repo's
   own experience with that list, the honest statement is that it is asked for at build

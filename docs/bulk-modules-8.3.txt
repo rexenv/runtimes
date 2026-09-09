@@ -1,0 +1,77 @@
+# Modules of the static-php.dev "bulk" PHP 8.3.31 (arm64) — the build this repo's
+# 8.3 artifacts REPLACE. Generated 9 Sep 2026 from the artifact rexenv shipped:
+#   php -m | tr 'A-Z' 'a-z' | sed 's/zend opcache/opcache/' | sort -u
+# NOT typed from documentation, and PER MINOR on purpose: the upstream sets are
+# not the same across versions (8.0 has no opentelemetry; 8.5 has two modules the
+# others do not), so one shared list would have quietly demanded the impossible
+# of the old minors and let real losses through on the new ones.
+#
+# scripts/build-php.sh fails the build when any line here is missing from what it
+# produced, and DERIVES its extension set from this file — so a version floor
+# upstream respected (swoole on 8.0/8.1, which needs an older release) is a fact
+# read from the artifact rather than a rule someone remembered.
+#
+# Always added on top, never listed here: pdo_pgsql (the reason these builds
+# exist) and pdo_sqlite (a builtin driver that never appears in php -m).
+apcu
+bcmath
+bz2
+calendar
+core
+ctype
+curl
+date
+dba
+dom
+event
+exif
+fileinfo
+filter
+ftp
+gd
+gmp
+hash
+iconv
+imagick
+imap
+intl
+json
+libxml
+mbstring
+mysqli
+mysqlnd
+opcache
+openssl
+opentelemetry
+pcntl
+pcre
+pdo
+pdo_mysql
+pgsql
+phar
+posix
+protobuf
+random
+readline
+redis
+reflection
+session
+shmop
+simplexml
+soap
+sockets
+sodium
+spl
+sqlite3
+standard
+swoole
+sysvmsg
+sysvsem
+sysvshm
+tokenizer
+xml
+xmlreader
+xmlwriter
+xsl
+zip
+zlib

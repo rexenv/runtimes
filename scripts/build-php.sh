@@ -92,6 +92,29 @@ esac
 # The value RESTATES spc's own default for these versions (from the failing make
 # line in that run) because the loader fills UNSET variables only — setting this
 # replaces the default rather than extending it, so anything left out is lost.
+# Everything this script reads from the repository is resolved to an ABSOLUTE
+# path HERE, before the first `cd`. The parity gate below took its reference as
+# `$(dirname $0)/../docs/...`, which is correct where the script starts and
+# meaningless after `cd "$WORK"` — so in CI the file was "not found" and the gate
+# printed a warning and passed. It was green on the laptop only because it was
+# invoked by absolute path. A guard whose input path can go missing is a guard
+# that reports success when it has checked nothing.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PHP_MINOR="${PHP_VERSION%.*}"
+PARITY_REF="$REPO_ROOT/docs/bulk-modules-${PHP_MINOR}.txt"
+PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
+
+# swoole's own floor. spc pins the swoole source to `v6.*` (config/source.json),
+# and swoole 6 refuses to compile below 8.2 — "require PHP version 8.2 or later",
+# which is what killed both old minors on run 34351885411 once the C23 flag had
+# cleared the first wall. Upstream's bulk 8.0/8.1 DO carry swoole, so dropping it
+# would be a parity loss; they carry an older release, and so do these.
+SWOOLE_5="https://github.com/swoole/swoole-src/archive/refs/tags/v5.1.7.tar.gz"
+CUSTOM_URLS=""
+case "$PHP_VERSION" in
+  8.0.*|8.1.*) CUSTOM_URLS="swoole:$SWOOLE_5" ;;
+esac
+
 case "$PHP_VERSION" in
   8.0.*|8.1.*)
     export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -Wno-strict-prototypes -std=gnu17 -Wno-incompatible-function-pointer-types"
@@ -113,7 +136,33 @@ esac
 #               is a builtin driver that never appears in `php -m` — named here
 #               so parity is a fact rather than an inference from a driver list
 #               that has already been caught lying once.
-EXTS="apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,event,exif,fileinfo,filter,ftp,gd,gmp,iconv,imagick,imap,intl,mbstring,mysqli,opcache,opentelemetry,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,protobuf,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,swoole,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib"
+# The BASE set: everything this build knows how to ask spc for. What is actually
+# built is this list INTERSECTED with the minor's parity reference, plus the two
+# PDO drivers that never appear in a module list.
+#
+# Derived rather than hand-maintained per version, because the upstream sets are
+# not the same across minors and the differences are real version floors: 8.0's
+# bulk build has no `opentelemetry`, and asking for it there would fail a build
+# to add something the artifact it replaces never had. Reading the floor off the
+# artifact is the same discipline as the parity gate itself — the alternative is
+# six lists somebody has to remember to edit.
+BASE_EXTS="apcu bcmath bz2 calendar ctype curl dba dom event exif fileinfo filter ftp gd gmp iconv imagick imap intl mbstring mysqli opcache opentelemetry openssl pcntl pdo_mysql pgsql phar posix protobuf readline redis session shmop simplexml soap sockets sodium sqlite3 swoole sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter xsl zip zlib"
+
+# ALWAYS added, never in a module list: pdo_pgsql is the reason this file exists,
+# and pdo_sqlite is a builtin driver `php -m` does not print (so the parity file
+# cannot carry it either).
+ALWAYS_EXTS="pdo_pgsql pdo_sqlite"
+
+[ -f "$PARITY_REF" ] || { echo "::error::no parity reference at $PARITY_REF — it decides the extension set AND the gate; refusing to guess"; exit 1; }
+EXTS=""
+for e in $BASE_EXTS; do
+  if grep -qxF "$e" "$PARITY_REF"; then
+    EXTS="${EXTS:+$EXTS,}$e"
+  else
+    echo "skipping $e — the bulk $PHP_MINOR build does not have it either"
+  fi
+done
+for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 
 # Libraries named explicitly rather than taken via --with-suggested-libs: the
 # suggestion graph pulls things nothing here needs (qdbm, libavif) into the same
@@ -131,17 +180,6 @@ LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick
 # present AND it must connect.
 REQUIRED_EXTS="phar mysqli pdo_mysql pdo_pgsql pgsql curl gd mbstring json xml dom openssl zip sodium intl posix opcache"
 
-# Everything this script reads from the repository is resolved to an ABSOLUTE
-# path HERE, before the first `cd`. The parity gate below took its reference as
-# `$(dirname $0)/../docs/...`, which is correct where the script starts and
-# meaningless after `cd "$WORK"` — so in CI the file was "not found" and the gate
-# printed a warning and passed. It was green on the laptop only because it was
-# invoked by absolute path. A guard whose input path can go missing is a guard
-# that reports success when it has checked nothing.
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PARITY_REF="$REPO_ROOT/docs/bulk-modules-8.x.txt"
-PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
-
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
 # ─── Toolchain ───────────────────────────────────────────────────────────────
@@ -149,6 +187,7 @@ say "toolchain"
 clang --version | head -2
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 echo "pre-built deps: $PREBUILT"
+echo "parity reference: $(basename "$PARITY_REF")"
 echo "PHP EXTRA_CFLAGS=${SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS:-<spc default>}"
 
 # ─── static-php-cli ──────────────────────────────────────────────────────────
@@ -167,6 +206,7 @@ tar xzf spc.tar.gz && chmod +x spc
 say "download sources"
 ./spc download \
   --with-php="${PHP_VERSION}" \
+  ${CUSTOM_URLS:+--custom-url="$CUSTOM_URLS"} \
   --for-extensions="$EXTS" \
   --for-libs="$LIBS" \
   $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \
