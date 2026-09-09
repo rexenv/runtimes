@@ -73,6 +73,31 @@ case "$ARCH" in
   *)       MAC_ARCH="$ARCH" ;;
 esac
 
+# ─── Compiler flags: the C23 default vs PHP 8.0/8.1's sources ────────────────
+#
+# The runner's clang defaults to `-std=gnu23`, which REMOVED K&R function
+# definitions. PHP 8.0 and 8.1 still contain them — measured, not predicted, on
+# run 34346526410, where both minors died on both arches while 8.2-8.5 built
+# clean:
+#
+#   ext/bcmath/libbcmath/src/init.c:65: error: unknown type name 'num'
+#   ext/libxml/libxml.c:431: error: expected ')'
+#
+# `-std=gnu17` for those two, applied to PHP'S OWN compile only. NOT via
+# SPC_DEFAULT_C_FLAGS, which spc feeds to every library it builds: the moment a
+# C++ dependency appears (libjxl, through imagick → ImageMagick) that fails with
+# `invalid argument '-std=gnu17' not allowed with 'C++'`. build-php74.sh learned
+# that one the expensive way; this is the same lesson, not a new one.
+#
+# The value RESTATES spc's own default for these versions (from the failing make
+# line in that run) because the loader fills UNSET variables only — setting this
+# replaces the default rather than extending it, so anything left out is lost.
+case "$PHP_VERSION" in
+  8.0.*|8.1.*)
+    export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -Wno-strict-prototypes -std=gnu17 -Wno-incompatible-function-pointer-types"
+    ;;
+esac
+
 # ─── Extension set ───────────────────────────────────────────────────────────
 # **Parity with the bulk builds, derived from a shipped binary rather than from
 # a list somebody typed**: `php -m` on rexenv's pinned 8.3.31 bulk artifact, minus
@@ -124,6 +149,7 @@ say "toolchain"
 clang --version | head -2
 echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
 echo "pre-built deps: $PREBUILT"
+echo "PHP EXTRA_CFLAGS=${SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS:-<spc default>}"
 
 # ─── static-php-cli ──────────────────────────────────────────────────────────
 say "static-php-cli $SPC_VERSION"
@@ -144,7 +170,7 @@ say "download sources"
   --for-extensions="$EXTS" \
   --for-libs="$LIBS" \
   $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \
-  --retry=2 \
+  --retry=5 \
   --debug
 
 say "doctor"
