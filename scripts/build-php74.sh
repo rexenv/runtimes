@@ -345,8 +345,14 @@ done
 #    _OnUpdateBool, which is exactly why PHP 8.0 has no Xdebug toggle. Recorded
 #    rather than enforced — if it comes out low, 7.4 ships without Xdebug like
 #    8.0, and rexenv's xdebug_supported() already answers false for free.
-SYMS="$(nm -gU "$BIN/php-fpm" | wc -l | tr -d ' ')"
-if nm -gU "$BIN/php-fpm" | grep -q _OnUpdateBool; then
+# Read the symbols ONCE and match the VARIABLE — `nm … | grep -q` under
+# `set -o pipefail` reports the opposite of what it finds: grep exits at the
+# first match, nm dies of SIGPIPE, the pipeline is 141, the `if` goes to else.
+# Found 9 Sep 2026 while writing scripts/build-php.sh, where the same line
+# claimed a binary had no `_OnUpdateBool` while `nm | grep` showed it does.
+SYMTAB="$(nm -gU "$BIN/php-fpm")"
+SYMS="$(printf '%s\n' "$SYMTAB" | wc -l | tr -d ' ')"
+if grep -q _OnUpdateBool <<<"$SYMTAB"; then
   echo "zend-symbols: $SYMS exported, _OnUpdateBool present → Xdebug can dlopen"
 else
   echo "::warning::zend-symbols: $SYMS exported, NO _OnUpdateBool → 7.4 gets no Xdebug (like 8.0)"
@@ -381,15 +387,20 @@ rm -f /tmp/wp-cli.phar /tmp/composer.phar
 #    and the failure this prevents cannot be reproduced on this runner at all.
 #    Assert the CAPABILITY is absent, not that a setting requests it be unused:
 #    an ini can be overridden and, as `-I` proved, can silently fail to apply.
-if "$BIN/php" -i | grep -i "PCRE JIT Support" | grep -qi "enabled"; then
+# Same SIGPIPE trap as the symbol check above, and here it fails OPEN: `php -i`
+# is long, so `| grep -qi` kills it, pipefail reports 141, and the `if` reads as
+# "JIT is not enabled" — a gate that can only ever pass. Matched against a
+# captured string instead.
+PHP_INFO="$("$BIN/php" -i)"
+if grep -i "PCRE JIT Support" <<<"$PHP_INFO" | grep -qi "enabled"; then
   echo "::error::PCRE JIT is still compiled in — Composer will die on Apple Silicon"
-  echo "::error::$("$BIN/php" -i | grep -i 'PCRE JIT Support')"
+  echo "::error::$(grep -i 'PCRE JIT Support' <<<"$PHP_INFO")"
   exit 1
 fi
 if "$BIN/php" -r 'preg_match("/^a(b)c$/","abc");' 2>&1 | grep -q "JIT memory"; then
   echo "::error::PCRE still attempts JIT"; exit 1
 fi
-echo "PCRE JIT: $("$BIN/php" -i | grep -i 'PCRE JIT Support') — PHP 7.4 bundles PCRE2 10.35, too old for Apple Silicon"
+echo "PCRE JIT: $(grep -i 'PCRE JIT Support' <<<"$PHP_INFO") — PHP 7.4 bundles PCRE2 10.35, too old for Apple Silicon"
 
 # ─── Licences ────────────────────────────────────────────────────────────────
 # Static linking puts these libraries INSIDE the binary, so their licences travel
