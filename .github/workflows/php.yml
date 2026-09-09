@@ -87,13 +87,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # spc itself runs on PHP >= 8.4. Nothing about the HOST php reaches the
-      # artifact — it only executes the builder.
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.4"
-          tools: none
-          coverage: none
+      # NO setup-php step, deliberately. The released `spc` binary is itself a
+      # static PHP — `./spc --version` and `./spc doctor` both run with no `php`
+      # on PATH at all (verified 9 Sep 2026 under `env -i`) — so the host PHP was
+      # never needed here, only inherited from the 7.4 workflow.
+      #
+      # It was not free: on macos-15-intel, `shivammathur/setup-php` spent
+      # 24 minutes and then failed with "Could not setup PHP 8.4", which killed
+      # the x86_64 half of this build's first run while the arm64 half went
+      # green (run 34335791126). A dependency that buys nothing can still cost
+      # you half a matrix.
 
       # spc's --prefer-pre-built asks api.github.com which pre-built dep archives
       # exist; unauthenticated that is 60 req/hr PER IP, shared across the runner
