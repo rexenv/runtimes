@@ -424,6 +424,43 @@ if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
     exit 1
   fi
   echo "  no function upstream has is missing here"
+
+  # …and the same question asked of the BUILD rather than the result: what did
+  # upstream turn on that we did not? A binary carries its own
+  # `Configure Command`, so this is their extension set from the bytes rather
+  # than from a list anybody typed — which is the whole mistake this repo made.
+  # Our set was derived from `php -m` on their artifact, a list of NAMES, so
+  # everything whose name PHP does not print (mbregex, the PDO drivers) fell out
+  # silently.
+  #
+  # Divergences we CHOSE are listed here with their reason, and only those.
+  # Anything else upstream enables and we do not fails the build:
+  #
+  #   micro           a third SAPI (single-file executables). rexenv runs cli and
+  #                   fpm; nothing in a site can reach it.
+  #   readline        GNU readline is GPL. We link libedit instead — the same
+  #                   functions under a permissive licence, and the same choice
+  #                   build-php74.sh asserts.
+  #   swoole-*        swoole 5 and 6 spell their hooks differently; the extension
+  #                   itself is compared by the function gate above.
+  flags() {
+    "$1" -i 2>/dev/null | grep -i "^Configure Command" | tr ' ' '\n' \
+      | grep -E "^'?--(with|enable)" | sed "s/'//g" | sed 's|=/.*||' | sort -u
+  }
+  DELIBERATE='--enable-micro|--with-readline|--without-readline|--enable-swoole|--with-libedit'
+  THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
+  flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
+  flags "$BIN/php" > "$OURS_FLAGS"
+  UNEXPECTED="$(comm -23 "$THEIRS_FLAGS" "$OURS_FLAGS" | grep -vE "$DELIBERATE" | tr '\n' ' ')"
+  echo "  we add: $(comm -13 "$THEIRS_FLAGS" "$OURS_FLAGS" | tr '\n' ' ')"
+  if [ -n "$UNEXPECTED" ]; then
+    echo "::error::upstream builds these and this build does not:$UNEXPECTED"
+    echo "::error::the target is THEIR set plus pdo_pgsql — a divergence has to be a"
+    echo "::error::decision with a reason, listed in DELIBERATE above, not a gap."
+    exit 1
+  fi
+  echo "  every flag upstream sets is set here, except the ones we chose not to"
+
   rm -rf /tmp/upstream-php /tmp/upstream-php.tar.gz
 else
   echo "::warning::upstream publishes no $UPSTREAM_URL — function parity NOT checked for this version"
