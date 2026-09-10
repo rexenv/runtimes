@@ -432,7 +432,22 @@ say "function parity against upstream's build of the same version"
 UPSTREAM_URL="https://dl.static-php.dev/static-php-cli/bulk/php-${PHP_VERSION}-cli-macos-${ARCH}.tar.gz"
 FUNCS_MINE="$(mktemp)"
 "$BIN/php" -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f);' > "$FUNCS_MINE"
-if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
+# A 404 and a flaky network are NOT the same answer, and treating them the same
+# is how a gate stops running without anyone noticing: `dl.static-php.dev` served
+# HTTP/2 stream errors for a stretch on 10 Sep 2026, and a bare `curl ||` would
+# have read that as "upstream does not publish this version" and skipped BOTH
+# parity gates on a build that then published. So the status is asked for
+# explicitly: 404 is the only failure that means "not published".
+UP_STATUS="$(curl -sSL --retry 5 --retry-all-errors -w '%{http_code}' \
+  -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL" || echo 000)"
+if [ "$UP_STATUS" = "404" ]; then
+  echo "::warning::upstream publishes no $UPSTREAM_URL (404) — function and flag parity NOT checked"
+elif [ "$UP_STATUS" != "200" ]; then
+  echo "::error::could not fetch upstream's build for parity ($UP_STATUS after 5 tries): $UPSTREAM_URL"
+  echo "::error::this is a network failure, not a missing version — the gates must not be skipped"
+  exit 1
+fi
+if [ "$UP_STATUS" = "200" ]; then
   mkdir -p /tmp/upstream-php && tar -C /tmp/upstream-php -xzf /tmp/upstream-php.tar.gz
   FUNCS_THEIRS="$(mktemp)"
   /tmp/upstream-php/php -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f);' \
@@ -495,8 +510,6 @@ if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
   echo "  every flag upstream sets is set here, except the ones we chose not to"
 
   rm -rf /tmp/upstream-php /tmp/upstream-php.tar.gz
-else
-  echo "::warning::upstream publishes no $UPSTREAM_URL — function parity NOT checked for this version"
 fi
 
 # 4. The dylib closure is what rexenv's relink_to_system_libs accepts. Anything
