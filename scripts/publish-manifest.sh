@@ -69,6 +69,48 @@ EXPECTED_PUBKEY="faa52f961af3e0542d836ab539823f598ef88b976055809f73247f88af13cb1
 REPO="${REXENV_MANIFEST_REPO:-rexenv/runtimes}"
 MIN_APP="${REXENV_MANIFEST_MIN_APP:-0.3.0}"
 BASE="https://dl.static-php.dev/static-php-cli/bulk"
+# Where OUR builds live. From 10 Sep 2026 the PHP entries in this document point
+# HERE, not at `$BASE` — see "Whose bytes this document points at" below.
+OURS_BASE="https://github.com/rexenv/runtimes/releases/download"
+
+# ── Whose bytes this document points at ──────────────────────────────────────
+#
+# It used to be upstream's, for every version. That is now WRONG for 8.x and the
+# reason is the whole point of this repo: **static-php.dev's builds have no
+# working `pdo_pgsql`**. A user with a PostgreSQL-backed Laravel site who took an
+# update from this manifest would land on a PHP that cannot reach its database —
+# it advertises the driver, accepts the socket and then hangs (rexenv ledger
+# #545/#550). An update must never take a capability away.
+#
+# So the flow, when static-php.dev publishes a new patch, is:
+#
+#   1. BUILD it here with `pdo_pgsql` — Actions → "Build PHP 8.x (with
+#      pdo_pgsql)", `versions: <the new patch>`, publish on. The build's own
+#      gates prove it against upstream's artifact of the SAME version (flags,
+#      functions, a real PostgreSQL connection).
+#   2. THEN run this script. It takes our release for any version we publish and
+#      refuses to fall back to upstream for it.
+#
+# Never step 2 without step 1. A version this repo has not built is not offered
+# at all — no entry — rather than offered from upstream, because "the update is
+# available a day earlier" is not worth "your site stopped reaching its
+# database". `--discover` will keep naming the patch until it is built.
+#
+# Serving our bytes makes rexenv the DISTRIBUTOR of them, so each version carries
+# a third artifact: `php-licenses`. rexenv refuses to resolve a self-distributed
+# PHP whose licence texts it cannot name (`binaries::licenses_spec`), so an entry
+# without it is an update that installs its interpreter and then fails.
+RELEASE_TAG_FOR() {
+  # The immutable release each version was published in. Mirrors
+  # `php_self_hosted_tag` in rexenv's core/binaries.rs — duplicated for the same
+  # reason PINS is, and wrong in the same harmless direction: a version with no
+  # row here is simply not offered.
+  case "$1" in
+    8.1.34|8.4.23|8.5.8) echo "php-8x-1" ;;
+    8.2.32|8.3.32)       echo "php-8x-2" ;;
+    *)                   echo "" ;;
+  esac
+}
 
 # ── The minors rexenv ships, and the patch each one PINS ──────────────────────
 #
@@ -352,11 +394,24 @@ for V in "${VERSIONS[@]}"; do
     echo "$V is not a patch of a minor rexenv ships — the app would drop it. Skipping." >&2
     continue
   }
+  # Ours or nothing (see "Whose bytes this document points at"). A patch upstream
+  # has published and we have not built yet is skipped — loudly, so the operator
+  # knows the answer is "build it first" rather than "nothing to do".
+  TAG="$(RELEASE_TAG_FOR "$V")"
+  if [ -z "$TAG" ]; then
+    echo "  → $V has no rexenv build yet — BUILD IT FIRST (Actions → Build PHP 8.x)," >&2
+    echo "     then re-run. Upstream's build has no pdo_pgsql, so offering it would" >&2
+    echo "     take PostgreSQL away from every site on this minor." >&2
+    continue
+  fi
   GROUP=""; ok=1
-  for KIND in cli fpm; do
+  for KIND in cli fpm licenses; do
     for ARCH in arm64 x86_64; do
       case "$ARCH" in arm64) U=aarch64 ;; *) U=x86_64 ;; esac
-      URL="$BASE/php-${V}-${KIND}-macos-${U}.tar.gz"
+      case "$KIND" in
+        licenses) URL="$OURS_BASE/$TAG/licenses-php-${V}-${U}.tar.gz" ;;
+        *)        URL="$OURS_BASE/$TAG/php-${V}-${KIND}-macos-${U}.tar.gz" ;;
+      esac
       OUT="$WORK/${V}-${KIND}-${ARCH}"
       printf '  %s %s %s … ' "$V" "$KIND" "$ARCH"
       if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
@@ -364,7 +419,11 @@ for V in "${VERSIONS[@]}"; do
       fi
       SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
       echo "$SHA"
-      NAME=$([ "$KIND" = fpm ] && echo php-fpm || echo php)
+      case "$KIND" in
+        fpm)      NAME=php-fpm ;;
+        licenses) NAME=php-licenses ;;
+        *)        NAME=php ;;
+      esac
       GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' \
         "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
     done
@@ -372,9 +431,10 @@ for V in "${VERSIONS[@]}"; do
   if [ "$ok" -eq 1 ]; then
     ENTRIES="${ENTRIES:+$ENTRIES,}$GROUP"; KEPT+=("$V")
   else
-    # All four or none. rexenv resolves cli AND fpm, on whichever arch the user
-    # has; a half-published version would offer an update that fails on one Mac
-    # and works on another.
+    # All SIX or none — cli, fpm and licences, on both arches. rexenv resolves
+    # every one of them; a half-published version would offer an update that
+    # fails on one Mac and works on another, or one that installs an interpreter
+    # and then refuses on its licences.
     echo "  → $V is incomplete upstream; dropped entirely."
   fi
 done

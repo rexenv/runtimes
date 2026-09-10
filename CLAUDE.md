@@ -56,6 +56,33 @@ The fourth gate is not a comparison: **a real PostgreSQL connection through PDO*
 `getAvailableDrivers()` both claimed PostgreSQL support in the artifact that had
 none, so only a socket can answer that one.
 
+## The manifest carries OUR builds — so the order is build, then publish
+
+rexenv installs new PHP patches without an app release by reading the signed
+manifest this repo publishes. Those entries used to point at `dl.static-php.dev`.
+They point at **our own releases** now, for the same reason this repo builds 8.x
+at all: upstream's artifacts have no working `pdo_pgsql`, so an update sourced
+from them would take PostgreSQL away from every site on that minor — the update
+would be a REGRESSION, delivered by the mechanism that exists to keep people
+current.
+
+**When upstream publishes a new patch:**
+
+1. Build it here (Actions → *Build PHP 8.x (with pdo_pgsql)*, publish on).
+2. Add the version to `RELEASE_TAG_FOR` in `scripts/publish-manifest.sh`.
+3. Run the manifest publisher.
+4. Bump the pins in rexenv when the app next releases (a pin beats the manifest,
+   so this is what a FRESH install gets).
+
+Never 3 before 1. A patch we have not built is **not offered** — the publisher
+skips it and prints what to do — because an update a day earlier is not worth a
+site that cannot reach its database.
+
+Each version carries **six** artifacts: `php` + `php-fpm` + **`php-licenses`**,
+both arches. The licences are not optional bookkeeping: rexenv refuses to resolve
+a self-distributed PHP whose licence texts it cannot name, so an entry without
+them installs an interpreter and then fails.
+
 ## Working rules
 
 - **Measure before building.** A 40-minute matrix is a slow way to learn

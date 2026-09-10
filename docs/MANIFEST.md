@@ -45,6 +45,39 @@ because nobody publishes a portable 7.4. It is deliberately skipped by discovery
 
 ## 2. Adding support for new PHP patches
 
+> **Build it here FIRST, then publish the manifest. Never the other way round.**
+>
+> The PHP entries in this document point at **rexenv/runtimes releases**, not at
+> `dl.static-php.dev`. That changed on 10 Sep 2026 and it is not a preference:
+> upstream's builds ship `pgsql` and **no working `pdo_pgsql`**, so a user with a
+> PostgreSQL-backed site who took an update sourced from upstream would land on a
+> PHP that cannot reach its database — it advertises the driver, accepts the
+> socket, and hangs (rexenv ledger #545/#550). **An update must never take a
+> capability away.**
+>
+> So when static-php.dev publishes a new patch:
+>
+> 1. **Build it** — Actions → *Build PHP 8.x (with pdo_pgsql)*, `versions:` the
+>    new patch, `build_number:` the next one, publish on. Its gates prove the
+>    result against upstream's artifact of the same version: every configure flag
+>    they set, every function they export, and a real PostgreSQL connection
+>    through PDO.
+> 2. **Add the version to `RELEASE_TAG_FOR`** in `scripts/publish-manifest.sh`,
+>    pointing at the release you just made.
+> 3. **Then** run the manifest publisher.
+>
+> A patch this repo has not built is **not offered at all** — the script skips it
+> and says why. `--discover` keeps naming it until it is built, which is the
+> reminder working rather than a nag: "the update is available a day earlier" is
+> not worth "your site stopped reaching its database".
+>
+> Each version therefore carries **six** artifacts, not four: `php` and
+> `php-fpm` on both arches, plus **`php-licenses`** on both. Serving our own bytes
+> makes rexenv their distributor, and the app refuses to resolve a
+> self-distributed PHP whose licence texts it cannot name
+> (`binaries::licenses_spec`) — an entry without them is an update that installs
+> an interpreter and then fails.
+
 Discovery probes upward from each minor's pin until **two consecutive misses** —
 two, not one, because upstream has skipped a patch number before and stopping at
 the first 404 would hide everything after it.
