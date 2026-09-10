@@ -109,7 +109,15 @@ PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
 # which is what killed both old minors on run 34351885411 once the C23 flag had
 # cleared the first wall. Upstream's bulk 8.0/8.1 DO carry swoole, so dropping it
 # would be a parity loss; they carry an older release, and so do these.
+# swoole's floor is per RELEASE, not "6 needs 8.2" — which is what I assumed from
+# one error message and what cost 8.1 a build. spc pins swoole to `v6.*`, and the
+# 6.2.x it resolved refuses to compile below PHP 8.2 ("require PHP version 8.2 or
+# later"). **6.1.7 compiles on 8.1 and is what upstream's own 8.1 build uses** —
+# read out of their artifact (`phpversion("swoole")`), not guessed. Pinning 5.1.7
+# there instead cost 24 functions: swoole 5 has no `stdext`, so
+# `swoole_str_*` / `swoole_array_*` were missing, which the function gate caught.
 SWOOLE_5="https://github.com/swoole/swoole-src/archive/refs/tags/v5.1.7.tar.gz"
+SWOOLE_61="https://github.com/swoole/swoole-src/archive/refs/tags/v6.1.7.tar.gz"
 # One --custom-url FLAG PER SOURCE. Comma-joining them makes spc treat the whole
 # string as a single URL: it fetched
 # "…/v5.1.7.tar.gz,php-src:file:///…patched.tar.gz" and 404'd, having reported it
@@ -124,7 +132,7 @@ PROTOBUF_3="https://pecl.php.net/get/protobuf-3.25.3.tgz"
 CUSTOM_URL_ARGS=()
 case "$PHP_VERSION" in
   8.0.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_5" --custom-url="protobuf:$PROTOBUF_3") ;;
-  8.1.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_5") ;;
+  8.1.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_61") ;;
 esac
 
 # PHP 8.0 needs one more: `ext/libxml/libxml.c:431` writes
@@ -481,11 +489,44 @@ if [ "$UP_STATUS" = "200" ]; then
   #                   build-php74.sh asserts.
   #   swoole-*        swoole 5 and 6 spell their hooks differently; the extension
   #                   itself is compared by the function gate above.
+  # Split on FLAG boundaries, not on spaces: spc emits `--enable-zstd` and
+  # `--disable-iouring` with no space between them (its own line 61/62), and a
+  # space-splitter reads that as one unknown token — which reported `--enable-zstd`
+  # as missing from a build that has it. The character class matters too: a
+  # trailing `[a-z0-9_-]+` swallows the second `--` and glues them back together,
+  # so each word is matched as `-word` and a doubled dash ENDS the match.
   flags() {
-    "$1" -i 2>/dev/null | grep -i "^Configure Command" | tr ' ' '\n' \
-      | grep -E "^'?--(with|enable)" | sed "s/'//g" | sed 's|=/.*||' | sort -u
+    "$1" -i 2>/dev/null | grep -i "^Configure Command" \
+      | grep -oE -- '--(with|enable)(-[a-z0-9_]+)+' | sort -u
   }
-  DELIBERATE='--enable-micro|--with-readline|--without-readline|--enable-swoole|--with-libedit'
+  # EXACT flags, never a prefix. `--enable-swoole` as a prefix excluded every
+  # swoole sub-flag at once — an allowlist that matches more than it names is not
+  # an allowlist, and this one hid a real question for four releases.
+  #
+  # `--enable-swoole-pgsql` / `--enable-swoole-sqlite` are here with the sharpest
+  # reason in this file, and it is spc's own sentence:
+  #
+  #   swoole-hook-pgsql provides pdo_pgsql, if you enable pgsql hook for swoole,
+  #   you must remove pdo_pgsql extension.
+  #
+  # They are MUTUALLY EXCLUSIVE with the driver this repo exists to ship. And
+  # that is the whole original mystery, explained: upstream builds the swoole
+  # HOOK, which registers a `pgsql` PDO driver that only works inside a swoole
+  # coroutine. So their `PDO::getAvailableDrivers()` lists `pgsql`,
+  # `extension_loaded('pdo_pgsql')` is false, and a real connection from ordinary
+  # PHP — Laravel, a plain script — accepts the socket and then hangs. It was
+  # never a broken driver; it was a driver for a runtime nobody here is using.
+  #
+  # So this divergence is not a gap: it is the trade rexenv is built to make.
+  # We take the real extension and lose the coroutine hooks (two constants,
+  # `SWOOLE_HOOK_PDO_PGSQL` / `SWOOLE_HOOK_PDO_SQLITE`); upstream takes the hooks
+  # and loses PostgreSQL for everyone not writing Swoole coroutine code.
+  #
+  # `--enable-openssl` is swoole's own SSL switch, and its name differs between
+  # builder versions while the CAPABILITY does not: `SWOOLE_SSL` is defined in
+  # both artifacts, and a full `get_defined_constants()` diff shows no other
+  # difference. Measured, both directions, before it was allowed in here.
+  DELIBERATE='^--enable-micro$|^--with-readline$|^--enable-swoole-ssh$|^--with-libedit$|^--enable-swoole-pgsql$|^--enable-swoole-sqlite$|^--enable-openssl$'
   THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
   flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
   flags "$BIN/php" > "$OURS_FLAGS"
