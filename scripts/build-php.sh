@@ -229,7 +229,13 @@ for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 # link line that PHP's gd check RUNS a conftest against, and a library that traps
 # on load then fails the build blaming gd. Same reasoning as build-php74.sh, and
 # the same list plus what the wider 8.x set needs.
-LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig"
+# `libavif` is in the list because the FUNCTION gate said so on its first run:
+# upstream's gd has `imageavif`/`imagecreatefromavif` and ours did not. Both
+# builds print `gd` in `php -m` — the same shape as mbregex inside mbstring, and
+# the reason a name diff cannot be the only gate. (build-php74.sh excludes avif
+# deliberately: PHP 7.4's gd has no avif support at all, so there it would be a
+# library nothing can call. Here upstream ships it, so we do.)
+LIBS="freetype,libjpeg,libwebp,libavif,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig"
 
 # Extensions the app cannot run without, asserted on the BUILT binary: spc will
 # happily drop one that failed to configure and still produce a working php.
