@@ -89,6 +89,25 @@ them installs an interpreter and then fails.
   build number. `php-8x-1`, `-2`, `-3` all still exist and all still resolve;
   that is the contract working, not a mess. rexenv pins full URLs including the
   tag, so a stale pin can 404 but can never silently change bytes.
+- **Build it on the laptop first. CI is for the second arch and the release.**
+  Measured 10 Sep 2026, same script, same extension set: **3–3.6 minutes here
+  (11 cores) against 17m26s on a macos-15 runner (3 cores)** — before counting
+  the queue, which ran 20 to 60 minutes that day. Every gate except one runs
+  locally: modules, functions, flags, the licences, and the real PostgreSQL
+  connection (`PG_BIN_DIR=<a postgres tree>/bin` uses one you already have
+  instead of `brew install`). What local CANNOT do is the **x86_64** half — spc
+  builds native — or the provenance attestation and the immutable release. So:
+  prove it here, publish there.
+
+  ```sh
+  cd /tmp/lb && GITHUB_TOKEN="$(gh auth token)" \
+    PG_BIN_DIR="$HOME/Library/Application Support/dev.rexenv.rexenv/bin/postgres-18.6.0/bin" \
+    bash ~/PhpstormProjects/runtimes/scripts/build-php.sh 8.3.32 aarch64 /tmp/lb/out true
+  ```
+
+  (`GITHUB_TOKEN` is not optional in practice: `--prefer-pre-built` asks
+  api.github.com which dep archives exist, and unauthenticated that is 60/hr per
+  IP — it 403s and the build dies before compiling anything.)
 - **One version first, then the matrix.** When anything about the build's shape
   changes — an extension, a library, a gate, a flag — run ONE version with
   `publish: false`, read it, fix it, and only then run the five. A shape change
