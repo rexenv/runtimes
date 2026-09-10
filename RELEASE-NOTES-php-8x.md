@@ -1,5 +1,16 @@
-Static PHP 8.x for macOS — `php` (cli) and `php-fpm`, arm64 and x86_64, **with a
-working `pdo_pgsql`**.
+Static PHP **8.1 – 8.5** for macOS — `php` (cli) and `php-fpm`, arm64 and x86_64,
+**with a working `pdo_pgsql`**.
+
+**PHP 8.0 is NOT in this release, and that is a measurement rather than a
+decision to make later.** It builds and passes every gate on arm64; on x86_64 the
+binary links and then aborts in static-php-cli's own sanity check —
+`php -n -r 'echo "hello";'` exits 6 with no output — reproducibly, four runs,
+with swoole+protobuf, with intl, and with imagick+imap+event each excluded in
+turn (runs 34375990759, 34384428498, 34388106503, 34391268989, 34391282101). The
+cause is still unknown; 8.0 has been end-of-life since Nov 2023, and half an
+architecture is not something to ship. So 8.0 keeps coming from static-php.dev's
+bulk build — which means **a PostgreSQL-backed site needs PHP 8.1 or newer**, the
+consuming app enforcing that per minor rather than globally.
 
 Built by `.github/workflows/php.yml` via static-php-cli 2.8.5, from php.net sources
 spc downloads and pins. Extension parity with the static-php.dev "bulk" builds these
