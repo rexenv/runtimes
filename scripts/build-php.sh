@@ -474,10 +474,17 @@ if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
   THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
   flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
   flags "$BIN/php" > "$OURS_FLAGS"
-  # `grep -vE -- "$PAT"`: the pattern starts with `--enable-micro`, and BSD grep
-  # reads that as an option ("unrecognized option") — which failed this gate on
-  # the very run whose function parity was exact.
-  UNEXPECTED="$(comm -23 "$THEIRS_FLAGS" "$OURS_FLAGS" | grep -vE -- "$DELIBERATE" | tr '\n' ' ')"
+  # Two grep traps in one line, both of which killed this gate on a run that had
+  # otherwise PASSED — the mirror image of a gate that cannot fail:
+  #
+  #   `-- $PAT`   the pattern starts with `--enable-micro`, and BSD grep reads
+  #               that as an option ("unrecognized option").
+  #   `|| true`   `grep -v` that filters EVERYTHING out exits 1, and under
+  #               `set -o pipefail` that is a failed command substitution, which
+  #               `set -e` turns into a silent exit — so the gate died precisely
+  #               when it had nothing to report. "Found nothing" is this filter's
+  #               SUCCESS case; grep does not agree, so it is said here.
+  UNEXPECTED="$(comm -23 "$THEIRS_FLAGS" "$OURS_FLAGS" | { grep -vE -- "$DELIBERATE" || true; } | tr '\n' ' ')"
   echo "  we add: $(comm -13 "$THEIRS_FLAGS" "$OURS_FLAGS" | tr '\n' ' ')"
   if [ -n "$UNEXPECTED" ]; then
     echo "::error::upstream builds these and this build does not:$UNEXPECTED"

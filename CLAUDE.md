@@ -108,6 +108,14 @@ them installs an interpreter and then fails.
   (`GITHUB_TOKEN` is not optional in practice: `--prefer-pre-built` asks
   api.github.com which dep archives exist, and unauthenticated that is 60/hr per
   IP — it 403s and the build dies before compiling anything.)
+- **`set -o pipefail` + `grep` is a trap, three times now.** Each cost a build:
+  `nm … | grep -q` reports the OPPOSITE of what it finds (grep exits at the first
+  match, `nm` dies of SIGPIPE, the pipeline is 141); `grep -vE "$PAT"` where the
+  pattern starts with `--` reads it as an option; and `grep -v` that filters
+  everything out exits 1, which under pipefail is a failed command substitution
+  and under `set -e` a SILENT exit — so a gate died exactly when it had nothing
+  to report. Read a long stream into a variable and match that; pass `--` before
+  a pattern; and end a filter whose empty result is success with `|| true`.
 - **One version first, then the matrix.** When anything about the build's shape
   changes — an extension, a library, a gate, a flag — run ONE version with
   `publish: false`, read it, fix it, and only then run the five. A shape change
