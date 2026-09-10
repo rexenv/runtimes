@@ -85,17 +85,27 @@ them installs an interpreter and then fails.
 
 ## Working rules
 
-- **Measure before building.** A 40-minute matrix is a slow way to learn
-  something a laptop can answer in two minutes: diff the artifacts you already
-  have (`get_defined_functions()`, `Configure Command`) before spending a cycle.
-  Every fix in this file was measured first and CI only confirmed it.
 - **A release tag is immutable and is never re-uploaded.** A rebuild is the NEXT
   build number. `php-8x-1`, `-2`, `-3` all still exist and all still resolve;
   that is the contract working, not a mess. rexenv pins full URLs including the
   tag, so a stale pin can 404 but can never silently change bytes.
+- **One version first, then the matrix.** When anything about the build's shape
+  changes — an extension, a library, a gate, a flag — run ONE version with
+  `publish: false`, read it, fix it, and only then run the five. A shape change
+  fails identically on every version, so a full matrix to learn one fact spends
+  ten runner slots and forty minutes to tell you what two would have.
+  **Measured, on 10 Sep 2026: three full matrices lost in a row** — `mbregex`,
+  then `libavif`, then a `grep` that read its own pattern as an option — each
+  discovered on all ten jobs at once, each fixed by one line. The matrix is for
+  proving five versions, not for finding a bug.
 - **`publish: false` first** when a build's shape has changed. A failed build
   never publishes (the publish job `needs:` the matrix), so `publish: true` is
-  safe — but the log is easier to read when nobody is waiting on a release.
+  safe — but the log is easier to read when nobody is waiting on a release, and a
+  cancelled run still costs the queue its slot.
+- **Measure locally before spending a cycle at all.** The artifacts are on the
+  machine: `get_defined_functions()`, `php -i | grep 'Configure Command'`,
+  `php -m`. Both capability gaps this repo has shipped were visible in a
+  two-minute diff of files already on disk. CI is for confirming, not finding.
 - **`skip_exts` is triage only** and the publish job refuses a run that used it.
 - **We are the DISTRIBUTOR.** Static linking puts every dependency's licence
   inside the binary, so the licence texts are collected from the sources spc
