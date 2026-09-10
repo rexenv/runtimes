@@ -457,7 +457,10 @@ if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
   THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
   flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
   flags "$BIN/php" > "$OURS_FLAGS"
-  UNEXPECTED="$(comm -23 "$THEIRS_FLAGS" "$OURS_FLAGS" | grep -vE "$DELIBERATE" | tr '\n' ' ')"
+  # `grep -vE -- "$PAT"`: the pattern starts with `--enable-micro`, and BSD grep
+  # reads that as an option ("unrecognized option") — which failed this gate on
+  # the very run whose function parity was exact.
+  UNEXPECTED="$(comm -23 "$THEIRS_FLAGS" "$OURS_FLAGS" | grep -vE -- "$DELIBERATE" | tr '\n' ' ')"
   echo "  we add: $(comm -13 "$THEIRS_FLAGS" "$OURS_FLAGS" | tr '\n' ' ')"
   if [ -n "$UNEXPECTED" ]; then
     echo "::error::upstream builds these and this build does not:$UNEXPECTED"
