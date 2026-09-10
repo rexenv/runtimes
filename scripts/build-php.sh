@@ -235,7 +235,24 @@ for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 # the reason a name diff cannot be the only gate. (build-php74.sh excludes avif
 # deliberately: PHP 7.4's gd has no avif support at all, so there it would be a
 # library nothing can call. Here upstream ships it, so we do.)
-LIBS="freetype,libjpeg,libwebp,libavif,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig"
+# `qdbm`, `liblz4` and `zstd` are here for the same reason `libavif` and `onig`
+# are: upstream builds against them and the difference is INVISIBLE to both other
+# gates. Measured 10 Sep 2026 on the artifacts, not reasoned about —
+#
+#   dba_handlers()   upstream: cdb, cdb_make, inifile, flatfile, qdbm
+#                    ours:     cdb, cdb_make, inifile, flatfile
+#   Redis::COMPRESSION_*  upstream: NONE, ZSTD, LZ4   ours: NONE
+#
+# — neither of which changes a module name or a function name. This is the third
+# form of the same lesson: `php -m` sees names, `get_defined_functions()` sees
+# functions, and a handler list or a class constant is neither. The FLAG gate is
+# what sees these, which is why it exists and why a divergence has to be a
+# decision rather than an oversight.
+#
+# (build-php74.sh excludes qdbm deliberately — there it was pulled in by
+# `--with-suggested-libs` and landed in the gd RUN test's link line. Named
+# explicitly here, it is a dba backend and nothing else.)
+LIBS="freetype,libjpeg,libwebp,libavif,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig,qdbm,liblz4,zstd"
 
 # Extensions the app cannot run without, asserted on the BUILT binary: spc will
 # happily drop one that failed to configure and still produce a working php.
