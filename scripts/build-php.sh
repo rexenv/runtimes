@@ -183,10 +183,24 @@ esac
 # six lists somebody has to remember to edit.
 BASE_EXTS="apcu bcmath bz2 calendar ctype curl dba dom event exif fileinfo filter ftp gd gmp iconv imagick imap intl mbstring mysqli opcache opentelemetry openssl pcntl pdo_mysql pgsql phar posix protobuf readline redis session shmop simplexml soap sockets sodium sqlite3 swoole sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter xsl zip zlib"
 
-# ALWAYS added, never in a module list: pdo_pgsql is the reason this file exists,
-# and pdo_sqlite is a builtin driver `php -m` does not print (so the parity file
-# cannot carry it either).
-ALWAYS_EXTS="pdo_pgsql pdo_sqlite"
+# ALWAYS added, never in a module list. Three extensions that `php -m` does not
+# print, which is exactly why the parity file cannot carry them and why each had
+# to be found the hard way:
+#
+#   pdo_pgsql   the reason this file exists (ledger #545)
+#   pdo_sqlite  a builtin PDO driver, reported only by getAvailableDrivers()
+#   mbregex     **mbstring's regex half** — `mb_split`, `mb_ereg`, `mb_str_split`'s
+#               regex paths. spc builds it as a SEPARATE extension against
+#               oniguruma, and PHP reports it inside `mbstring`, so a build
+#               without it lists `mbstring` and is missing a dozen functions.
+#               Laravel's `Str::studly` calls `mb_split`, so EVERY artisan
+#               command died with
+#               `Call to undefined function Illuminate\Support\mb_split()`
+#               on php-8x-1 and -2. Found by a user creating a site, 10 Sep 2026.
+#               This is the pdo_pgsql shape a second time: a name in `php -m`
+#               is not a capability, and a gate that compares names cannot see
+#               the difference — see the function-parity gate below.
+ALWAYS_EXTS="pdo_pgsql pdo_sqlite mbregex"
 
 # TRIAGE ONLY: extensions to leave out of this build, comma-separated, via the
 # environment. It exists because "which extension makes the built binary abort on
@@ -215,7 +229,7 @@ for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 # link line that PHP's gd check RUNS a conftest against, and a library that traps
 # on load then fails the build blaming gd. Same reasoning as build-php74.sh, and
 # the same list plus what the wider 8.x set needs.
-LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu"
+LIBS="freetype,libjpeg,libwebp,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig"
 
 # Extensions the app cannot run without, asserted on the BUILT binary: spc will
 # happily drop one that failed to configure and still produce a working php.
@@ -370,6 +384,49 @@ if true; then
   fi
   [ -z "$SKIP_EXTS" ] || echo "::warning::parity EXCLUDES the skipped set ($SKIP_EXTS) — triage only"
   echo "parity: every module in $(basename "$REF") is present ($(grep -cvE '^\s*(#|$)' "$REF") compared)"
+fi
+
+# 3b. FUNCTION parity against upstream's own artifact — the gate that would have
+#     caught mbregex, and the reason gate 3 alone is not enough.
+#
+#     `php -m` reports NAMES. Two builds can both say `mbstring` and differ by a
+#     dozen functions, because spc builds the regex half as a separate extension
+#     that PHP folds into mbstring's name. That is what shipped in php-8x-1 and
+#     -2: every Laravel `artisan` command died on
+#     `Call to undefined function Illuminate\Support\mb_split()`, on a build whose
+#     module list was identical to upstream's. The same shape as `pdo_pgsql`
+#     being advertised by a PDO that had no such driver.
+#
+#     So this compares CAPABILITIES: download the bulk build for the same version
+#     and diff `get_defined_functions()['internal']`. Anything upstream has and
+#     we do not fails the build; the other direction is printed, since we add
+#     extensions on purpose.
+#
+#     A 404 is a WARNING, not a pass in disguise: it means upstream does not
+#     publish this version (7.4 never was), which is a fact about them rather
+#     than about us — and the log says which of the two happened.
+say "function parity against upstream's build of the same version"
+UPSTREAM_URL="https://dl.static-php.dev/static-php-cli/bulk/php-${PHP_VERSION}-cli-macos-${ARCH}.tar.gz"
+FUNCS_MINE="$(mktemp)"
+"$BIN/php" -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f);' > "$FUNCS_MINE"
+if curl -fsSL -o /tmp/upstream-php.tar.gz "$UPSTREAM_URL"; then
+  mkdir -p /tmp/upstream-php && tar -C /tmp/upstream-php -xzf /tmp/upstream-php.tar.gz
+  FUNCS_THEIRS="$(mktemp)"
+  /tmp/upstream-php/php -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f);' \
+    > "$FUNCS_THEIRS"
+  MISSING="$(comm -23 "$FUNCS_THEIRS" "$FUNCS_MINE" | tr '\n' ' ')"
+  EXTRA="$(comm -13 "$FUNCS_THEIRS" "$FUNCS_MINE" | tr '\n' ' ')"
+  echo "  ours: $(grep -c . "$FUNCS_MINE") internal functions · upstream: $(grep -c . "$FUNCS_THEIRS")"
+  [ -n "$EXTRA" ] && echo "  we add: $EXTRA"
+  if [ -n "$MISSING" ]; then
+    echo "::error::this build is MISSING functions upstream's has:$MISSING"
+    echo "::error::a module list cannot see this — same names, fewer capabilities."
+    exit 1
+  fi
+  echo "  no function upstream has is missing here"
+  rm -rf /tmp/upstream-php /tmp/upstream-php.tar.gz
+else
+  echo "::warning::upstream publishes no $UPSTREAM_URL — function parity NOT checked for this version"
 fi
 
 # 4. The dylib closure is what rexenv's relink_to_system_libs accepts. Anything
