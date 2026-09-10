@@ -83,6 +83,14 @@ both arches. The licences are not optional bookkeeping: rexenv refuses to resolv
 a self-distributed PHP whose licence texts it cannot name, so an entry without
 them installs an interpreter and then fails.
 
+**When rexenv's pins move to a new release tag, `RELEASE_TAG_FOR` in
+`scripts/publish-manifest.sh` moves in the same change.** It mirrors rexenv's
+`php_self_hosted_tag` by hand and nothing compares the two. On 9 Sep 2026 rexenv
+moved 8.1-8.5 to `php-8x-3..7`; this table kept pointing at `-1`/`-2` — the
+builds missing `mb_split`, `imageavif`, `qdbm`/`lz4`/`zstd` — until 11 Sep, so a
+publish in between would have offered every install the builds the pin bump
+existed to replace.
+
 ## Working rules
 
 - **A release tag is immutable and is never re-uploaded.** A rebuild is the NEXT

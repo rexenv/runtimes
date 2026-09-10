@@ -12,9 +12,12 @@
 # needs NO signing key, so the workflow that runs it every day never touches the
 # secret. An empty stdout means there is nothing to tell a human about.
 #
-# This is the whole "support the new PHP versions" job. There is nothing to build:
-# rexenv installs static-php.dev's portable builds for 8.x, so what a new version
-# needs is a DIGEST somebody vouched for. That is what this produces.
+# This is the SECOND half of the "support the new PHP versions" job. The first is
+# building it: rexenv serves its OWN 8.1-8.5 builds (static-php.dev's have no
+# working `pdo_pgsql`), so a new patch is built here first — see "Never step 2
+# without step 1" below — and this script publishes the DIGEST of that build.
+# (This paragraph said "there is nothing to build" until 11 Sep 2026, a claim
+# that stopped being true when rexenv started building 8.x.)
 #
 # ── What rexenv does with it ───────────────────────────────────────────────────
 #
@@ -105,10 +108,19 @@ RELEASE_TAG_FOR() {
   # `php_self_hosted_tag` in rexenv's core/binaries.rs — duplicated for the same
   # reason PINS is, and wrong in the same harmless direction: a version with no
   # row here is simply not offered.
+  #
+  # php-8x-1 and -2 still exist and still resolve, and are WRONG to offer: they
+  # lack `mbregex` (no `mb_split`, which Laravel's Str::studly calls), `libavif`,
+  # `qdbm`/`lz4`/`zstd`, and 8.1's swoole. This table pointed at them until
+  # 11 Sep 2026, two days after rexenv itself had moved to -3..-7 — so publishing
+  # would have handed every install the builds the pin bump existed to replace.
   case "$1" in
-    8.1.34|8.4.23|8.5.8) echo "php-8x-1" ;;
-    8.2.32|8.3.32)       echo "php-8x-2" ;;
-    *)                   echo "" ;;
+    8.1.34) echo "php-8x-3" ;;
+    8.2.32) echo "php-8x-4" ;;
+    8.3.32) echo "php-8x-5" ;;
+    8.4.23) echo "php-8x-6" ;;
+    8.5.8)  echo "php-8x-7" ;;
+    *)      echo "" ;;
   esac
 }
 
