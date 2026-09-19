@@ -33,6 +33,10 @@ on:
         description: "Optional: publish this x.y.z instead of the tap's latest (e.g. '0.6.1')."
         required: false
         default: ""
+      windows:
+        description: "Publish the WINDOWS descriptor (app-manifest-windows.json, the _x64.zip) instead of the macOS one."
+        type: boolean
+        default: false
 
 permissions:
   contents: write # commit app-manifest.json + .sig to the branch
@@ -45,7 +49,9 @@ concurrency:
   # A SEPARATE group from publish-manifest: the two documents have separate
   # serials, and making a PHP publish wait on an app publish would be a queue
   # nobody asked for.
-  group: publish-app-manifest
+  # Per OS: the two documents have separate serials, so a Windows publish need
+  # not wait on a macOS one, and two Windows runs at once still queue.
+  group: publish-app-manifest-${{ inputs.windows && 'windows' || 'macos' }}
   cancel-in-progress: false
 
 jobs:
@@ -72,6 +78,7 @@ jobs:
           # the signing key.
           DRY_RUN: ${{ inputs.dry_run }}
           VERSION: ${{ inputs.version }}
+          WINDOWS: ${{ inputs.windows }}
         run: |
           set -euo pipefail
           [ -n "$REXENV_MANIFEST_KEY" ] || {
@@ -84,6 +91,7 @@ jobs:
           # green nowhere, published nothing, and the log stops mid-step.
           args=()
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$WINDOWS" = "true" ]; then args+=(--windows); fi
           # Quoted: this is one version, and the script validates it against
           # x.y.z before it reaches any command.
           if [ -n "$VERSION" ]; then args+=("$VERSION"); fi
@@ -99,6 +107,8 @@ jobs:
           path: |
             app-manifest.json
             app-manifest.json.sig
+            app-manifest-windows.json
+            app-manifest-windows.json.sig
           if-no-files-found: ignore
 
       - name: What a user's app will see
@@ -111,9 +121,11 @@ jobs:
           # CDN-cached for minutes, so a fetch here would compare against the
           # PREVIOUS document and fail on every successful run. The API is
           # authoritative the moment the commit lands.
-          gh api "repos/${{ github.repository }}/contents/app-manifest.json" --jq '.content' \
+          DOC=app-manifest.json
+          if [ "${{ inputs.windows }}" = "true" ]; then DOC=app-manifest-windows.json; fi
+          gh api "repos/${{ github.repository }}/contents/$DOC" --jq '.content' \
             | base64 -d > fetched.json
-          cmp -s fetched.json app-manifest.json \
+          cmp -s fetched.json "$DOC" \
             || { echo "::error::the committed descriptor is not the one this run signed"; exit 1; }
           echo "published serial: $(sed -n 's/.*\"serial\"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' fetched.json)"
           echo "offering rexenv $(sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' fetched.json | head -1)"
