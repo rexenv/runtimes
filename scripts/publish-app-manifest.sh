@@ -5,6 +5,19 @@
 #   ./scripts/publish-app-manifest.sh              publish the tap's latest release
 #   ./scripts/publish-app-manifest.sh --dry-run    build and sign, publish nothing
 #   ./scripts/publish-app-manifest.sh 0.6.1        publish that version specifically
+#   ./scripts/publish-app-manifest.sh --windows    the WINDOWS descriptor (see below)
+#
+# ── Two descriptors, one per OS ──────────────────────────────────────────────
+#
+# `--windows` publishes `app-manifest-windows.json` + `.sig`: the SAME schema and
+# key, describing `rexenv_<V>_x64.zip` — the install directory's contents, flat,
+# which the Windows app swaps into `%LOCALAPPDATA%\rexenv` — and with NO
+# `minimumSystemVersion`: the Windows app has no host version to compare it
+# against (its floor is the installer's, D6). A second document rather than a
+# per-OS map inside the first, so the macOS contract and every shipped macOS
+# build's parser stay exactly as they are; each OS reads its own URL
+# (`core::app_update::manifest_urls_on` in rexenv). Its serial is its OWN,
+# read-then-incremented from ITS file.
 #
 # ── What this is, next to publish-manifest.sh ─────────────────────────────────
 #
@@ -67,19 +80,25 @@ TAP_REPO="${TAP_REPO:-rexenv/homebrew-tap}"
 EXPECTED_PUBKEY="faa52f961af3e0542d836ab539823f598ef88b976055809f73247f88af13cb12"
 # rexenv's `minimumSystemVersion`. Cross-checked by rexenv's check-app-manifest.sh.
 MIN_MACOS="15.0"
-DOC="app-manifest.json"
-SIG="$DOC.sig"
 KEY="${REXENV_MANIFEST_KEY_FILE:-$HOME/.rexenv/manifest-key.pem}"
 
 DRY=0
 WANT=""
+OS="macos"
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    --windows) OS="windows" ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) WANT="${arg#v}" ;;
   esac
 done
+if [ "$OS" = "windows" ]; then
+  DOC="app-manifest-windows.json"
+else
+  DOC="app-manifest.json"
+fi
+SIG="$DOC.sig"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -120,7 +139,11 @@ V="${TAG#v}"
 printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "'$V' is not plain three-segment semver — rexenv refuses anything else, and a prerelease is not offerable by design"
 
-ASSET="rexenv_${V}_universal.app.tar.gz"
+if [ "$OS" = "windows" ]; then
+  ASSET="rexenv_${V}_x64.zip"
+else
+  ASSET="rexenv_${V}_universal.app.tar.gz"
+fi
 REL="$(gh api "repos/$TAP_REPO/releases/tags/$TAG" 2>/dev/null)" \
   || fail "no release $TAG on $TAP_REPO (a draft is invisible here, which is the point)"
 
@@ -132,7 +155,8 @@ PUBLISHED_AT="$(printf '%s' "$REL" | jq -r '.published_at // ""')"
 if [ -z "$URL" ]; then
   fail "release $TAG carries no $ASSET.
   That release predates in-app self-update, or its build did not run
-  scripts/release-assets.sh. There is nothing to describe — publish a release
+  scripts/release-assets.sh (macOS) / scripts/release-windows.sh (Windows).
+  There is nothing to describe — publish a release
   that has the archive first."
 fi
 
@@ -151,9 +175,19 @@ fi
 # `set -o pipefail` that kills the whole run. bsdtar on macOS stays quiet about
 # it, so this failed only on the Linux runner — found by the first dry run,
 # 7 Sep 2026, which is what a dry run is for.
-listing="$(tar -tzf "$WORK/$ASSET")"
-first="${listing%%$'\n'*}"
-[ "$first" = "rexenv.app/" ] || fail "the archive's first entry is '$first', not 'rexenv.app/'"
+if [ "$OS" = "windows" ]; then
+  # The Windows archive is FLAT: `rexenv.exe` and `rex.exe` at the root and nothing
+  # else. The swap's extractor strips nothing, so a wrapper directory would land the
+  # executable one level too deep; `uninstall.exe` is deliberately absent (the
+  # installer writes it, the swap carries the installed one across).
+  members="$(unzip -Z1 "$WORK/$ASSET" | sort)"
+  [ "$members" = $'rex.exe\nrexenv.exe' ] || fail "the archive's members are not exactly rexenv.exe + rex.exe (flat):
+$members"
+else
+  listing="$(tar -tzf "$WORK/$ASSET")"
+  first="${listing%%$'\n'*}"
+  [ "$first" = "rexenv.app/" ] || fail "the archive's first entry is '$first', not 'rexenv.app/'"
+fi
 
 # ── 3. The serial: read the published one and increment ─────────────────────
 CUR=0
@@ -178,7 +212,7 @@ cat > "$WORK/$DOC" <<JSON
     "sha256": "$SHA",
     "sizeBytes": $SIZE,
     "minAppVersion": "",
-    "minimumSystemVersion": "$MIN_MACOS",
+    "minimumSystemVersion": "$([ "$OS" = "windows" ] && printf '' || printf '%s' "$MIN_MACOS")",
     "notes": "",
     "publishedAt": "$PUBLISHED_AT"
   }
@@ -225,8 +259,8 @@ cp "$WORK/$DOC" "$DOC"
 cp "$WORK/$SIG" "$SIG"
 git add "$DOC" "$SIG"
 git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" \
-  commit -q -m "app-manifest: rexenv $V (serial $SERIAL)"
+  commit -q -m "${DOC%.json}: rexenv $V (serial $SERIAL)"
 git push -q
 echo
 echo "published. Installed copies will be offered $V at their next check."
-echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh"
+echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh$([ "$OS" = "windows" ] && printf ' --windows')"

@@ -21,6 +21,19 @@ Same thing from a laptop:
 
 ---
 
+## 0. Two documents, one per OS (19 Sep 2026)
+
+`app-manifest.json` describes the macOS release (`rexenv_<v>_universal.app.tar.gz`);
+`app-manifest-windows.json` describes the Windows one (`rexenv_<v>_x64.zip` — the install
+directory's contents, flat, which the Windows app swaps into `%LOCALAPPDATA%\rexenv`). Same
+schema, same key, same rules below; separate serials, each read-then-incremented from its own
+file. A second document rather than a per-OS field, so no shipped macOS build's parser and no
+line of the macOS contract changes for a Windows reason — each OS fetches its own URL. The
+Windows one carries an EMPTY `minimumSystemVersion`: the Windows app has no host version to
+compare, and its floor is the installer's (Windows 11 x64; 10 22H2 best-effort). Publish it
+with `scripts/publish-app-manifest.sh --windows`, or the workflow's `windows` input; verify
+from rexenv with `scripts/check-app-manifest.sh --windows`.
+
 ## 1. The failure this is here to prevent
 
 Publishing a rexenv release takes **two clicks in two repositories**, and only the
