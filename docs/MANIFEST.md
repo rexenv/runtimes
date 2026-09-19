@@ -100,6 +100,24 @@ only 8.3.32 and silently deleted every other version from it. A user already on
 8.2.32 could then no longer resolve it — a fresh install or a cache repair fails,
 and the app refuses an apply for a version nothing vouches for.
 
+### Everything already published is carried forward
+
+Discovery probes **strictly above** each pin, so the moment a version becomes the
+pin it stops being discovered — and because the document is a replacement, the
+next publish would simply not contain it. That is not hypothetical. On 19 Sep
+2026 a routine "publish Adminer 6.1.0" run computed a document missing 8.1.34,
+8.4.23 and 8.5.8 — eighteen entries — purely because rexenv's pins had moved up
+to meet them, and the guard below refused it.
+
+So the script re-states the published set rather than re-deriving it: every PHP
+and Adminer version the live `manifest.json` carries is added to the work list
+before hashing. Carrying a version forward **re-fetches and re-hashes it** from
+our immutable release, so this cannot launder a stale digest — the bytes are read
+again on every publish.
+
+It happens *after* the "nothing newer upstream" exit, so a quiet day still
+publishes nothing and leaves the serial where it is.
+
 ### Nothing that is published may disappear
 
 Because the document is a replacement, every publish can delete. Discovery is a

@@ -154,8 +154,8 @@ PINS=(
   "7.4:7.4.33"   # ours, built here — never on static-php.dev
   "8.0:8.0.30"
   "8.1:8.1.34"
-  "8.2:8.2.31"
-  "8.3:8.3.31"
+  "8.2:8.2.32"
+  "8.3:8.3.32"
   "8.4:8.4.23"
   "8.5:8.5.8"
 )
@@ -239,6 +239,8 @@ fi
 CUR=0
 FIRST_RUN=0
 PUBLISHED=""
+PUBLISHED_PHP=""
+PUBLISHED_ADMINER=""
 # Read through the API, never `raw.githubusercontent.com`: raw is CDN-cached for
 # minutes, so right after a publish it serves the OLD document — and the serial
 # read from it would then REPEAT a serial, which every installed app refuses.
@@ -259,13 +261,23 @@ else
     echo "same reason as above (see docs/MANIFEST.md §3)." >&2
     exit 1
   }
-  # The versions the published document already carries. Used ONLY by --discover,
-  # to decide whether a human needs telling. It must never filter the publish
-  # path: the manifest is a REPLACEMENT set, not an accumulating one, so dropping
-  # an already-published version from a later run would delete it from the
-  # document and drop those users back to the pin compiled into their app.
+  # The versions the published document already carries. Used by --discover, to
+  # decide whether a human needs telling, and by the carry-forward below, which
+  # puts them back into the next document. It must never filter the publish path:
+  # the manifest is a REPLACEMENT set, not an accumulating one, so dropping an
+  # already-published version from a later run would delete it from the document
+  # and drop those users back to the pin compiled into their app.
   PUBLISHED="$(tr ',' '\n' < "$WORK/manifest.json" \
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' | sort -u)"
+  # Split by FAMILY. The flat list above cannot answer "is this php or adminer?",
+  # and both families number x.y.z — 5.4.2 is a real Adminer version and a
+  # plausible PHP one. `"name":"php"` is matched exactly so `php-fpm` and
+  # `php-licenses` do not land in the PHP list; each version appears once there,
+  # and the hashing loop fetches all six artifacts from it anyway.
+  PUBLISHED_PHP="$(tr '{' '\n' < "$WORK/manifest.json" \
+    | sed -n 's/.*"name":"php","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
+  PUBLISHED_ADMINER="$(tr '{' '\n' < "$WORK/manifest.json" \
+    | sed -n 's/.*"name":"adminer","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
 fi
 SERIAL=$((CUR + 1))
 # A FLOOR, for the one case the read cannot see: the manifest used to be a
@@ -374,17 +386,27 @@ fi
 if [ "$DISCOVER" -eq 1 ]; then
   # QUALIFIED: unqualified, an issue body reads "8.4.24 5.5.1" and a human
   # cannot tell which project 5.5.1 belongs to.
+  # Each family is compared against its OWN published list. Against the flat one,
+  # an Adminer version that happens to equal a PHP version would report the PHP
+  # patch as "already published" and the issue would never name it.
+  # `${arr[@]:+...}` on every expansion: macOS ships bash 3.2, where `"${arr[@]}"`
+  # on an EMPTY array is an unbound variable under `set -u` and kills the script.
+  # An empty list here is the normal quiet day — no new PHP upstream — so the
+  # daily discovery job would have died exactly when it had nothing to report,
+  # which is the `set -e`/`pipefail` failure this repo has already paid for three
+  # times. `${arr[*]:-none}` below is safe — the default makes it a bound
+  # expansion — so only the `[@]` loops need the guard.
   NEW=()
-  for V in "${VERSIONS[@]}"; do
-    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("php:$V")
+  for V in ${VERSIONS[@]:+"${VERSIONS[@]}"}; do
+    printf '%s\n' "$PUBLISHED_PHP" | grep -qx "$V" || NEW+=("php:$V")
   done
-  for V in "${ADMINER_VERSIONS[@]}"; do
-    printf '%s\n' "$PUBLISHED" | grep -qx "$V" || NEW+=("adminer:$V")
+  for V in ${ADMINER_VERSIONS[@]:+"${ADMINER_VERSIONS[@]}"}; do
+    printf '%s\n' "$PUBLISHED_ADMINER" | grep -qx "$V" || NEW+=("adminer:$V")
   done
   echo "upstream above the pins — php: ${VERSIONS[*]:-none}" >&2
   echo "upstream above the pins — adminer: ${ADMINER_VERSIONS[*]:-none}" >&2
   echo "already in the published manifest: $(printf '%s ' $PUBLISHED)" >&2
-  [ ${#NEW[@]} -gt 0 ] && printf '%s\n' "${NEW[@]}"
+  [ ${#NEW[@]} -gt 0 ] && printf '%s\n' ${NEW[@]:+"${NEW[@]}"}
   exit 0
 fi
 
@@ -396,10 +418,43 @@ if [ ${#VERSIONS[@]} -eq 0 ] && [ ${#ADMINER_VERSIONS[@]} -eq 0 ]; then
   exit 0
 fi
 
+# ── Carry forward everything the published document already offers ────────────
+#
+# Discovery probes STRICTLY ABOVE each pin, so the moment a version becomes the
+# pin it stops being discovered — and since the manifest is a REPLACEMENT
+# document, the next publish would simply not contain it any more. That is not
+# hypothetical: on 19 Sep 2026 a routine "publish Adminer 6.1.0" run computed a
+# document missing 8.1.34, 8.4.23 and 8.5.8 — eighteen entries — purely because
+# rexenv's pins had moved up to meet them. The drop guard below refused it, and
+# the fix was to name all three on the command line by hand, which is a step
+# nobody will remember and the discovery issue explicitly tells you to skip.
+#
+# So the published set is re-stated rather than re-derived. Carrying a version
+# forward re-fetches and re-hashes it from OUR immutable release, so this cannot
+# launder a stale digest: the bytes are read again every time.
+#
+# Placed AFTER the "nothing newer upstream" exit on purpose. This must not make
+# a quiet day look like work — with nothing new to add, the correct outcome is
+# still to publish nothing and leave the serial where it is.
+if [ -n "$PUBLISHED_PHP" ]; then
+  while IFS= read -r v; do
+    [ -n "$v" ] && VERSIONS+=("$v")
+  done <<< "$PUBLISHED_PHP"
+  # shellcheck disable=SC2207
+  VERSIONS=($(printf '%s\n' "${VERSIONS[@]}" | sort -Vu))
+fi
+if [ -n "$PUBLISHED_ADMINER" ]; then
+  while IFS= read -r v; do
+    [ -n "$v" ] && ADMINER_VERSIONS+=("$v")
+  done <<< "$PUBLISHED_ADMINER"
+  # shellcheck disable=SC2207
+  ADMINER_VERSIONS=($(printf '%s\n' "${ADMINER_VERSIONS[@]}" | sort -Vu))
+fi
+
 # ── Hash every artifact, from the URL rexenv itself will use ──────────────────
 # Not from a build directory: the digest has to describe the bytes a USER receives.
 ENTRIES=""; KEPT=()
-for V in "${VERSIONS[@]}"; do
+for V in ${VERSIONS[@]:+"${VERSIONS[@]}"}; do
   case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not an x.y.z patch: $V" >&2; exit 1 ;; esac
   MINOR="${V%.*}"
   printf '%s\n' "${PINS[@]}" | grep -q "^${MINOR}:" || {
@@ -457,7 +512,7 @@ done
 # Publishing it twice under two arch labels would be a fiction stated twice, and
 # rexenv refuses it: `Family::Adminer::arch_ok` accepts only "any", so a per-arch
 # row is dropped and the version becomes unofferable.
-for V in "${ADMINER_VERSIONS[@]}"; do
+for V in ${ADMINER_VERSIONS[@]:+"${ADMINER_VERSIONS[@]}"}; do
   case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not an x.y.z adminer version: $V" >&2; exit 1 ;; esac
   [ "${V%%.*}" -le "$ADMINER_MAX_MAJOR" ] || {
     echo "adminer $V is above the probed ceiling ($ADMINER_MAX_MAJOR) — the app would drop it. Skipping." >&2
