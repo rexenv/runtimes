@@ -14,16 +14,23 @@ name: Publish PHP update manifest
 # and opens an issue when there is something here worth publishing. That one holds
 # no key and can only write issues.
 #
-# Manual only, and `dry_run` defaults ON. This publishes a document that every
-# installed rexenv trusts; a run that fires on push is a supply-chain incident
-# waiting for a bad merge.
+# Manual only, and the mode dropdown defaults to `dry-run`. This publishes a
+# document that every installed rexenv trusts; a run that fires on push is a
+# supply-chain incident waiting for a bad merge.
+#
+# A DROPDOWN rather than a checkbox: a box named `dry_run` has to be inverted in
+# the reader's head at the one moment a mistake is expensive. Each option here
+# names what the run it starts will do.
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Discover, download, hash and sign — publish nothing. Leave ON for the first look."
-        type: boolean
-        default: true
+      mode:
+        description: "What this run does — the dropdown IS the safety gate"
+        type: choice
+        default: "dry-run — discover, download, hash and sign; publish NOTHING"
+        options:
+          - "dry-run — discover, download, hash and sign; publish NOTHING"
+          - "publish — sign AND commit; every installed rexenv sees it"
       versions:
         description: "Optional: space-separated x.y.z to publish instead of discovering (e.g. '8.3.32 8.4.24')."
         required: false
@@ -61,7 +68,7 @@ jobs:
           # substituted BEFORE the shell sees the line, so a version string
           # containing `; curl …` would execute — in the one job on this repo
           # that holds the signing key.
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ startsWith(inputs.mode, 'dry-run') }}
           VERSIONS: ${{ inputs.versions }}
         run: |
           set -euo pipefail
@@ -71,7 +78,9 @@ jobs:
             exit 1
           }
           args=()
-          [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+          # if, not `[ … ] && …`: under `set -e` a false test IS a failing
+          # command, so the && form aborts the job on every REAL publish.
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           # Unquoted ON PURPOSE: the input is a space-separated list of versions.
           # The script validates each against x.y.z and against the minors rexenv
           # ships, so a junk value is refused rather than probed.
@@ -91,7 +100,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: What a user's app will see
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ !startsWith(inputs.mode, 'dry-run') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -3,8 +3,8 @@
 **A new PHP patch is out and rexenv users should be offered it. Do this:**
 
 > **Actions → “Publish PHP update manifest” → Run workflow.**
-> Leave `dry_run` **on** for the first run, read the log, then run it again with
-> `dry_run` off.
+> Mode is a dropdown: leave it on **`dry-run …`** for the first run, read the log,
+> then run it again with **`publish …`**.
 
 That is the whole job. It finds every patch upstream has published since rexenv's
 pins, downloads and hashes all four artifacts for each, signs the document, verifies

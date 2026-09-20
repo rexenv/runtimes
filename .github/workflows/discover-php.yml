@@ -88,7 +88,8 @@ jobs:
           **$VERSIONS**
 
           To ship them, run [Publish PHP update manifest](https://github.com/$REPO/actions/workflows/publish-manifest.yml) —
-          leave \`dry_run\` ON for the first look, then run it again with \`dry_run\` OFF.
+          leave the mode dropdown on \`dry-run …\` for the first look, then run it
+          again with \`publish …\`.
           Discovery is automatic, so the \`versions\` box can stay empty.
 
           Publishing needs an approval on the \`manifest-signing\` environment; that

@@ -8,3 +8,18 @@ spc.tar.gz
 .idea/
 manifest.json
 manifest.json.sig
+
+# macOS / editor droppings
+.DS_Store
+**/.DS_Store
+._*
+.AppleDouble
+.vscode/
+*.swp
+
+# local build scratch (the "prove it here first" loop in CLAUDE.md)
+/lb/
+/tmp-build/
+fetched.json
+app-manifest.json.tmp
+*.sig.tmp

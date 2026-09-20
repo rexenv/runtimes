@@ -3,8 +3,9 @@
 **A rexenv release was just PUBLISHED on the tap. Do this:**
 
 > **Actions → “Publish app update manifest” → Run workflow.**
-> Leave `dry_run` **on** for the first run, read the log, then run it again with
-> `dry_run` off.
+> Mode is a dropdown: leave it on **`dry-run …`** for the first run, read the log,
+> then run it again with **`publish …`**. The `os` dropdown below it picks which
+> descriptor gets signed — macOS or Windows.
 
 That is the whole job. It reads the tap's latest published release, downloads the
 `rexenv_<version>_universal.app.tar.gz` it carries, hashes what it downloaded,
