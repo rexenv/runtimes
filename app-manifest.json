@@ -1,14 +1,14 @@
 {
-  "serial": 10,
-  "generatedAt": "2026-09-20T12:05:39Z",
+  "serial": 11,
+  "generatedAt": "2026-09-20T14:12:47Z",
   "release": {
-    "version": "0.8.4",
-    "url": "https://github.com/rexenv/homebrew-tap/releases/download/v0.8.4/rexenv_0.8.4_universal.app.tar.gz",
-    "sha256": "b00e35c612a5ac0fc20c8b5d2fdfcb1b08c845f32452e531d95b66948d611712",
-    "sizeBytes": 29565514,
+    "version": "0.8.5",
+    "url": "https://github.com/rexenv/homebrew-tap/releases/download/v0.8.5/rexenv_0.8.5_universal.app.tar.gz",
+    "sha256": "405908bbac7f0b13a97eafe2a6ac96cbda34f0e813fc7e57eebb60a2db618d4d",
+    "sizeBytes": 29568910,
     "minAppVersion": "",
     "minimumSystemVersion": "15.0",
     "notes": "",
-    "publishedAt": "2026-09-20T12:04:19Z"
+    "publishedAt": "2026-09-20T14:11:08Z"
   }
 }
