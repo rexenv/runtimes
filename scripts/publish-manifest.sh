@@ -491,8 +491,34 @@ for V in ${VERSIONS[@]:+"${VERSIONS[@]}"}; do
         licenses) NAME=php-licenses ;;
         *)        NAME=php ;;
       esac
-      GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' \
-        "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
+      # The macOS floor the Mach-O DECLARES, read from the bytes just hashed —
+      # `minMacos` in the entry. rexenv resolves a pin set per host tier since
+      # 23 Sep 2026 (its docs/PLAN-macos-13-floor.md §6.5): a macOS 13 or 14 host
+      # is offered only an entry whose floor it meets, and an entry with NONE is
+      # a build nobody measured, so it is never offered to a legacy host at all.
+      # Licences are text and carry no floor. Read with vtool (LC_BUILD_VERSION's
+      # `minos`, or the older LC_VERSION_MIN_MACOSX's `version`); refuse to
+      # publish a Mach-O whose floor cannot be read rather than guess one.
+      FLOOR=""
+      if [ "$KIND" != licenses ]; then
+        X="$WORK/x-${V}-${KIND}-${ARCH}"; mkdir -p "$X"
+        MEMBER=php; [ "$KIND" = fpm ] && MEMBER=php-fpm
+        tar -xzf "$OUT" -C "$X" "$MEMBER" 2>/dev/null || { echo "  → $V $KIND $ARCH: no $MEMBER member" >&2; ok=0; break 2; }
+        FLOOR="$(vtool -show-build "$X/$MEMBER" 2>/dev/null | awk '/ minos /{print $2; exit}')"
+        [ -z "$FLOOR" ] && FLOOR="$(vtool -show-build "$X/$MEMBER" 2>/dev/null | awk '/ version /{print $2; exit}')"
+        if [ -z "$FLOOR" ]; then
+          echo "  → $V $KIND $ARCH: cannot read a macOS floor off the binary — not publishing a guess" >&2
+          ok=0; break 2
+        fi
+        echo "     minos $FLOOR"
+      fi
+      if [ -n "$FLOOR" ]; then
+        GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s","minMacos":"%s"}' \
+          "$NAME" "$V" "$ARCH" "$URL" "$SHA" "$FLOOR")"
+      else
+        GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' \
+          "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
+      fi
     done
   done
   if [ "$ok" -eq 1 ]; then
