@@ -79,7 +79,7 @@ TAP_REPO="${TAP_REPO:-rexenv/homebrew-tap}"
 # a rotation done backwards fails in this run instead of in the field.
 EXPECTED_PUBKEY="faa52f961af3e0542d836ab539823f598ef88b976055809f73247f88af13cb12"
 # rexenv's `minimumSystemVersion`. Cross-checked by rexenv's check-app-manifest.sh.
-MIN_MACOS="15.0"
+MIN_MACOS="13.0"
 KEY="${REXENV_MANIFEST_KEY_FILE:-$HOME/.rexenv/manifest-key.pem}"
 
 DRY=0
