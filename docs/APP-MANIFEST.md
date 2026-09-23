@@ -94,9 +94,18 @@ fetch, so nothing can be offered ahead of a person's decision.
 `MIN_MACOS` is the one typed fact, because it lives in rexenv's `tauri.conf.json`
 in a **private** repo this workflow cannot read. It is cross-checked from the other
 side: rexenv's `scripts/check-app-manifest.sh` compares it against that file and
-says so when the two drift. A number restated in two repos is exactly the shape
+FAILS when the two drift. A number restated in two repos is exactly the shape
 that goes stale — the cask's macOS floor did, for four releases — so it is checked
 rather than remembered.
+
+**It went stale anyway (24 Sep 2026).** This paragraph claimed the cross-check
+for eleven days before it existed. rexenv 0.8.7 lowered the floor to 13.0;
+`MIN_MACOS` stayed at 15.0; serial 13 was signed with it. Every macOS 13/14 host
+on 0.8.7 would have been told, by `NoOffer::NeedsNewerMacos`, that no later
+release fits it — silently, on every check, forever. Serial 14 re-signed the same
+asset with 13.0, and the check is real now. **When rexenv's `minimumSystemVersion`
+moves, `MIN_MACOS` moves in the same release**, and rexenv's check script is the
+thing that proves it did.
 
 ## 4. What the script refuses to publish
 
