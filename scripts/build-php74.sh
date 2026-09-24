@@ -114,7 +114,13 @@ else
   # spc's own Linux default, plus the two 7.4 flags. No `--target`: the musl
   # cross toolchain spc installs IS the target. gcc spells the pointer-type
   # warning differently and does not know clang's `-Werror=unknown-warning-option`.
-  export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Os -std=gnu17 -Wno-incompatible-pointer-types"
+  # `-fPIC -fPIE` (large model), NOT `-fpic -fpie`: on aarch64 the small GOT
+  # overflows linking sapi/cli/php — "relocation truncated to fit:
+  # R_AARCH64_LD64_GOTPAGE_LO15 against symbol `zend_ce_traversable'", "too many
+  # GOT entries for -fpic, please recompile with -fPIC" (run 35998030865, the
+  # first arm lane, 25 Sep 2026). x86_64 has no small-GOT limit; the same flags
+  # keep the two lanes one line.
+  export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fPIC -fPIE -Os -std=gnu17 -Wno-incompatible-pointer-types"
 fi
 
 export SPC_CMD_PREFIX_PHP_CONFIGURE="./configure --prefix= --with-valgrind=no --enable-shared=no --enable-static=yes --disable-all --disable-phpdbg --without-pcre-jit"
