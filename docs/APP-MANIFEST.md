@@ -5,7 +5,7 @@
 > **Actions → “Publish app update manifest” → Run workflow.**
 > Mode is a dropdown: leave it on **`dry-run …`** for the first run, read the log,
 > then run it again with **`publish …`**. The `os` dropdown below it picks which
-> descriptor gets signed — macOS or Windows.
+> descriptor gets signed — macOS, Windows, or one of the four Linux ones.
 
 That is the whole job. It reads the tap's latest published release, downloads the
 `rexenv_<version>_universal.app.tar.gz` it carries, hashes what it downloaded,
@@ -34,6 +34,17 @@ Windows one carries an EMPTY `minimumSystemVersion`: the Windows app has no host
 compare, and its floor is the installer's (Windows 11 x64; 10 22H2 best-effort). Publish it
 with `scripts/publish-app-manifest.sh --windows`, or the workflow's `windows` input; verify
 from rexenv with `scripts/check-app-manifest.sh --windows`.
+
+**Linux is FOUR more (25 Sep 2026):** `app-manifest-linux-<deb|appimage>-<x86_64|aarch64>.json`,
+one per package kind and arch, because a `.deb` (`rexenv_<v>_{amd64,arm64}.deb`, installed by
+`dpkg -i` through polkit) and an AppImage (`rexenv_<v>_{amd64,aarch64}.AppImage`, swapped in
+place as one file) are different bytes and different mechanisms. The Linux app picks the
+document from what it IS; a kind+arch with no document is offered nothing. Empty
+`minimumSystemVersion` (the floor is the package's `Depends`). The publisher checks a deb's
+`Package`/`Version`/`Architecture` and its `usr/bin/{rexenv,rex}` members — the same facts the
+app checks before `dpkg -i` — and an AppImage's type-2 magic. `scripts/publish-app-manifest.sh
+--linux deb aarch64`, or the workflow's four `Linux …` options; verify with
+`scripts/check-app-manifest.sh --linux deb aarch64`.
 
 ## 1. The failure this is here to prevent
 

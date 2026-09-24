@@ -50,6 +50,10 @@ on:
         options:
           - "macOS — app-manifest.json (the .tar.gz the mac app updates from)"
           - "Windows — app-manifest-windows.json (the _x64.zip)"
+          - "Linux deb x86_64 — app-manifest-linux-deb-x86_64.json (the _amd64.deb)"
+          - "Linux deb aarch64 — app-manifest-linux-deb-aarch64.json (the _arm64.deb)"
+          - "Linux AppImage x86_64 — app-manifest-linux-appimage-x86_64.json (the _amd64.AppImage)"
+          - "Linux AppImage aarch64 — app-manifest-linux-appimage-aarch64.json (the _aarch64.AppImage)"
 
 permissions:
   contents: write # commit app-manifest.json + .sig to the branch
@@ -62,9 +66,10 @@ concurrency:
   # A SEPARATE group from publish-manifest: the two documents have separate
   # serials, and making a PHP publish wait on an app publish would be a queue
   # nobody asked for.
-  # Per OS: the two documents have separate serials, so a Windows publish need
-  # not wait on a macOS one, and two Windows runs at once still queue.
-  group: publish-app-manifest-${{ startsWith(inputs.os, 'Windows') && 'windows' || 'macos' }}
+  # Per DOCUMENT: each has its own serial, so a Windows publish need not wait on a
+  # macOS one, and two runs on the same document still queue. The Linux options
+  # are four documents, keyed by their kind+arch words.
+  group: publish-app-manifest-${{ startsWith(inputs.os, 'Windows') && 'windows' || startsWith(inputs.os, 'Linux') && format('linux-{0}-{1}', contains(inputs.os, 'AppImage') && 'appimage' || 'deb', contains(inputs.os, 'x86_64') && 'x86_64' || 'aarch64') || 'macos' }}
   cancel-in-progress: false
 
 jobs:
@@ -92,6 +97,9 @@ jobs:
           DRY_RUN: ${{ startsWith(inputs.mode, 'dry-run') }}
           VERSION: ${{ inputs.version }}
           WINDOWS: ${{ startsWith(inputs.os, 'Windows') }}
+          LINUX: ${{ startsWith(inputs.os, 'Linux') }}
+          LINUX_KIND: ${{ contains(inputs.os, 'AppImage') && 'appimage' || 'deb' }}
+          LINUX_ARCH: ${{ contains(inputs.os, 'x86_64') && 'x86_64' || 'aarch64' }}
         run: |
           set -euo pipefail
           [ -n "$REXENV_MANIFEST_KEY" ] || {
@@ -105,6 +113,7 @@ jobs:
           args=()
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$WINDOWS" = "true" ]; then args+=(--windows); fi
+          if [ "$LINUX" = "true" ]; then args+=(--linux "$LINUX_KIND" "$LINUX_ARCH"); fi
           # Quoted: this is one version, and the script validates it against
           # x.y.z before it reaches any command.
           if [ -n "$VERSION" ]; then args+=("$VERSION"); fi
@@ -122,6 +131,8 @@ jobs:
             app-manifest.json.sig
             app-manifest-windows.json
             app-manifest-windows.json.sig
+            app-manifest-linux-*.json
+            app-manifest-linux-*.json.sig
           if-no-files-found: ignore
 
       - name: What a user's app will see
@@ -129,6 +140,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WINDOWS: ${{ startsWith(inputs.os, 'Windows') }}
+          LINUX: ${{ startsWith(inputs.os, 'Linux') }}
+          LINUX_KIND: ${{ contains(inputs.os, 'AppImage') && 'appimage' || 'deb' }}
+          LINUX_ARCH: ${{ contains(inputs.os, 'x86_64') && 'x86_64' || 'aarch64' }}
         run: |
           set -euo pipefail
           # Read it back through the API, not raw.githubusercontent.com: raw is
@@ -137,6 +151,7 @@ jobs:
           # authoritative the moment the commit lands.
           DOC=app-manifest.json
           if [ "$WINDOWS" = "true" ]; then DOC=app-manifest-windows.json; fi
+          if [ "$LINUX" = "true" ]; then DOC="app-manifest-linux-$LINUX_KIND-$LINUX_ARCH.json"; fi
           gh api "repos/${{ github.repository }}/contents/$DOC" --jq '.content' \
             | base64 -d > fetched.json
           cmp -s fetched.json "$DOC" \

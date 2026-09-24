@@ -6,6 +6,7 @@
 #   ./scripts/publish-app-manifest.sh --dry-run    build and sign, publish nothing
 #   ./scripts/publish-app-manifest.sh 0.6.1        publish that version specifically
 #   ./scripts/publish-app-manifest.sh --windows    the WINDOWS descriptor (see below)
+#   ./scripts/publish-app-manifest.sh --linux deb aarch64      one of the FOUR Linux ones
 #
 # ── Two descriptors, one per OS ──────────────────────────────────────────────
 #
@@ -18,6 +19,14 @@
 # build's parser stay exactly as they are; each OS reads its own URL
 # (`core::app_update::manifest_urls_on` in rexenv). Its serial is its OWN,
 # read-then-incremented from ITS file.
+#
+# `--linux <deb|appimage> <x86_64|aarch64>` publishes `app-manifest-linux-<kind>-<arch>.json`
+# + `.sig`: FOUR documents, because a `.deb` and an AppImage are different bytes swapped
+# by different mechanisms (`dpkg -i` through polkit; a file exchange), and each arch is
+# its own build. Same schema, same key, no `minimumSystemVersion` (the floor is the
+# package's `Depends`). The Linux app picks its document from what it IS
+# (`platform::linux::app_bundle_rules::descriptor_variant`) — a variant with no document
+# is offered nothing, which is the safe default for one nobody has published.
 #
 # ── What this is, next to publish-manifest.sh ─────────────────────────────────
 #
@@ -85,19 +94,30 @@ KEY="${REXENV_MANIFEST_KEY_FILE:-$HOME/.rexenv/manifest-key.pem}"
 DRY=0
 WANT=""
 OS="macos"
-for arg in "$@"; do
-  case "$arg" in
+LINUX_KIND=""
+LINUX_ARCH=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY=1 ;;
     --windows) OS="windows" ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
-    *) WANT="${arg#v}" ;;
+    --linux)
+      OS="linux"
+      LINUX_KIND="${2:-}"; LINUX_ARCH="${3:-}"
+      case "$LINUX_KIND/$LINUX_ARCH" in
+        deb/x86_64|deb/aarch64|appimage/x86_64|appimage/aarch64) ;;
+        *) echo "publish-app-manifest: --linux takes <deb|appimage> <x86_64|aarch64>" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) WANT="${1#v}" ;;
   esac
+  shift
 done
-if [ "$OS" = "windows" ]; then
-  DOC="app-manifest-windows.json"
-else
-  DOC="app-manifest.json"
-fi
+case "$OS" in
+  windows) DOC="app-manifest-windows.json" ;;
+  linux) DOC="app-manifest-linux-$LINUX_KIND-$LINUX_ARCH.json" ;;
+  *) DOC="app-manifest.json" ;;
+esac
 SIG="$DOC.sig"
 
 WORK="$(mktemp -d)"
@@ -139,11 +159,20 @@ V="${TAG#v}"
 printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "'$V' is not plain three-segment semver — rexenv refuses anything else, and a prerelease is not offerable by design"
 
-if [ "$OS" = "windows" ]; then
-  ASSET="rexenv_${V}_x64.zip"
-else
-  ASSET="rexenv_${V}_universal.app.tar.gz"
-fi
+# The Linux names are what `tauri build` writes, unrenamed — the app verifies the
+# package's control fields and the image's `--print-version`, not the filename, but
+# the descriptor must point at the file the release actually carries. Tauri spells
+# the deb's arch dpkg's way (amd64/arm64) and the AppImage's its own (amd64/aarch64).
+case "$OS" in
+  windows) ASSET="rexenv_${V}_x64.zip" ;;
+  linux)
+    if [ "$LINUX_KIND" = "deb" ]; then
+      [ "$LINUX_ARCH" = "x86_64" ] && ASSET="rexenv_${V}_amd64.deb" || ASSET="rexenv_${V}_arm64.deb"
+    else
+      [ "$LINUX_ARCH" = "x86_64" ] && ASSET="rexenv_${V}_amd64.AppImage" || ASSET="rexenv_${V}_aarch64.AppImage"
+    fi ;;
+  *) ASSET="rexenv_${V}_universal.app.tar.gz" ;;
+esac
 REL="$(gh api "repos/$TAP_REPO/releases/tags/$TAG" 2>/dev/null)" \
   || fail "no release $TAG on $TAP_REPO (a draft is invisible here, which is the point)"
 
@@ -155,7 +184,8 @@ PUBLISHED_AT="$(printf '%s' "$REL" | jq -r '.published_at // ""')"
 if [ -z "$URL" ]; then
   fail "release $TAG carries no $ASSET.
   That release predates in-app self-update, or its build did not run
-  scripts/release-assets.sh (macOS) / scripts/release-windows.sh (Windows).
+  scripts/release-assets.sh (macOS) / scripts/release-windows.sh (Windows) /
+  scripts/release-linux.sh (Linux — both archs are two hosts, and each is uploaded by hand).
   There is nothing to describe — publish a release
   that has the archive first."
 fi
@@ -175,7 +205,39 @@ fi
 # `set -o pipefail` that kills the whole run. bsdtar on macOS stays quiet about
 # it, so this failed only on the Linux runner — found by the first dry run,
 # 7 Sep 2026, which is what a dry run is for.
-if [ "$OS" = "windows" ]; then
+if [ "$OS" = "linux" ] && [ "$LINUX_KIND" = "deb" ]; then
+  # What the Linux app checks before `dpkg -i`, checked here first: the package is
+  # `rexenv`, at THIS version, for THIS arch, carrying `usr/bin/rexenv` and `usr/bin/rex`.
+  # `dpkg-deb` on the Ubuntu runner; `ar` + `tar` on a laptop without it.
+  want_arch="$([ "$LINUX_ARCH" = "x86_64" ] && printf amd64 || printf arm64)"
+  if command -v dpkg-deb >/dev/null; then
+    control="$(dpkg-deb -f "$WORK/$ASSET")"
+    members="$(dpkg-deb -c "$WORK/$ASSET" | awk '{print $NF}')"
+  else
+    ctar="$(ar t "$WORK/$ASSET" | grep '^control\.tar')"
+    dtar="$(ar t "$WORK/$ASSET" | grep '^data\.tar')"
+    (cd "$WORK" && ar x "$ASSET" "$ctar" "$dtar")
+    control="$(tar -xOf "$WORK/$ctar" ./control 2>/dev/null || tar -xOf "$WORK/$ctar" control)"
+    members="$(tar -tf "$WORK/$dtar")"
+  fi
+  field() { printf '%s\n' "$control" | sed -n "s/^$1: *//p" | head -1; }
+  [ "$(field Package)" = "rexenv" ] || fail "the package is '$(field Package)', not rexenv"
+  [ "$(field Version)" = "$V" ] || fail "the package says Version '$(field Version)', the release is $V"
+  [ "$(field Architecture)" = "$want_arch" ] || fail "the package is built for '$(field Architecture)', this document is $want_arch"
+  # With or without a leading `./`: Tauri's bundler writes `usr/bin/rexenv`, dpkg-deb
+  # writes `./usr/bin/rexenv` — the app accepts both (app_bundle_rules::verify_deb_listing).
+  members="$(printf '%s\n' "$members" | sed 's#^\./##')"
+  for m in usr/bin/rexenv usr/bin/rex; do
+    printf '%s\n' "$members" | grep -qx "$m" || fail "the package is missing $m — the Linux app refuses it"
+  done
+elif [ "$OS" = "linux" ]; then
+  # An AppImage: an ELF with the type-2 AppImage magic at offset 8. Its version is what
+  # `--print-version` answers, which only a Linux host of that arch can run — the
+  # release build's own log is the record of that; here the shape is all that is checked.
+  magic="$(dd if="$WORK/$ASSET" bs=1 skip=8 count=3 2>/dev/null | od -An -c | tr -d ' ')"
+  [ "$magic" = 'AI002' ] || fail "the file is not a type-2 AppImage (magic at offset 8: '$magic')"
+  head -c 4 "$WORK/$ASSET" | od -An -c | grep -q 'E *L *F' || fail "the file is not an ELF executable"
+elif [ "$OS" = "windows" ]; then
   # The Windows archive is FLAT: `rexenv.exe` and `rex.exe` at the root and nothing
   # else. The swap's extractor strips nothing, so a wrapper directory would land the
   # executable one level too deep; `uninstall.exe` is deliberately absent (the
@@ -212,7 +274,7 @@ cat > "$WORK/$DOC" <<JSON
     "sha256": "$SHA",
     "sizeBytes": $SIZE,
     "minAppVersion": "",
-    "minimumSystemVersion": "$([ "$OS" = "windows" ] && printf '' || printf '%s' "$MIN_MACOS")",
+    "minimumSystemVersion": "$([ "$OS" = "macos" ] && printf '%s' "$MIN_MACOS" || printf '')",
     "notes": "",
     "publishedAt": "$PUBLISHED_AT"
   }
@@ -263,4 +325,4 @@ git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" \
 git push -q
 echo
 echo "published. Installed copies will be offered $V at their next check."
-echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh$([ "$OS" = "windows" ] && printf ' --windows')"
+echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh$(case "$OS" in windows) printf ' --windows';; linux) printf ' --linux %s %s' "$LINUX_KIND" "$LINUX_ARCH";; esac)"
