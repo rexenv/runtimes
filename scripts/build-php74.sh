@@ -483,7 +483,8 @@ for d in source/*/; do
   name="$(basename "$d")"
   # libxml2 ships `Copyright`; others use COPYING/LICENSE/LICENCE spellings.
   # The list grew by one real miss — keep adding rather than lowering the bar.
-  for f in LICENSE LICENSE.txt LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
+  # `LICENSE.TXT` is freetype's spelling (the Linux lanes' pre-built source, 25 Sep 2026).
+  for f in LICENSE LICENSE.txt LICENSE.TXT LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
            COPYRIGHT Copyright copyright LICENSE-MIT NOTICE; do
     if [ -f "$d$f" ]; then
       cp "$d$f" "$LIC/${name}.${f}"
@@ -499,6 +500,14 @@ echo "collected $found dependency licence files from $(ls -d source/*/ 2>/dev/nu
 # warning: a warning in a green build is a warning nobody reads, and the whole
 # point of collecting these from the real sources was to stop the licence set
 # from describing last year's extension list.
+# The one explicit exception: SQLite ships NO licence file because it has no licence —
+# the amalgamation is public domain (https://sqlite.org/copyright.html), and the tarball
+# carries only the source. Recorded as a file in the set so the reader of the licences
+# tarball sees the answer rather than a gap (the first Linux lane failed here, 25 Sep 2026).
+if [ -d source/sqlite ] && ! ls "$LIC/sqlite."* >/dev/null 2>&1; then
+  printf '%s\n' "SQLite is in the public domain: https://sqlite.org/copyright.html" \
+    "The amalgamation ships no licence file; this note stands in for one." > "$LIC/sqlite.PUBLIC-DOMAIN.txt"
+fi
 missing=""
 for d in source/*/; do
   name="$(basename "$d")"
