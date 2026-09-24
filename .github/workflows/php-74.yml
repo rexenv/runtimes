@@ -30,8 +30,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-15,       arch: aarch64 }
-          - { runner: macos-15-intel, arch: x86_64  }
+          - { runner: macos-15,        arch: aarch64 }
+          - { runner: macos-15-intel,  arch: x86_64  }
+          # The Linux lanes (rexenv's Linux port, L8): fully static musl ELFs,
+          # the same shape as static-php.dev's bulk 8.x Linux builds. The build
+          # script reads the OS from `uname`; the artifact name carries it.
+          - { runner: ubuntu-24.04,     arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -61,7 +66,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: php-7.4.33-${{ matrix.arch }}
+          name: php-7.4.33-${{ startsWith(matrix.runner, 'ubuntu') && 'linux' || 'macos' }}-${{ matrix.arch }}
           path: out/
           retention-days: 7
 
@@ -72,7 +77,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: debug-${{ matrix.arch }}
+          name: debug-${{ startsWith(matrix.runner, 'ubuntu') && 'linux' || 'macos' }}-${{ matrix.arch }}
           path: out/debug/
           retention-days: 7
           if-no-files-found: warn
@@ -164,7 +169,14 @@ jobs:
           mkdir -p out
           find staged -type f -name '*.tar.gz' -exec cp -n {} out/ \;
           cd out
-          # One source mirror is enough; both arches download the same tarball.
+          # Every lane that ran must have delivered: a matrix lane that failed
+          # with fail-fast off would otherwise publish a release missing an OS,
+          # and rexenv's catalog pins all four by hash.
+          for want in php-7.4.33-cli-macos-aarch64 php-7.4.33-cli-macos-x86_64 \
+                      php-7.4.33-cli-linux-aarch64 php-7.4.33-cli-linux-x86_64; do
+            [ -f "$want.tar.gz" ] || { echo "::error::$want.tar.gz is missing — a lane failed; nothing is published"; exit 1; }
+          done
+          # One source mirror is enough; all lanes download the same tarball.
           shasum -a 256 ./*.tar.gz | tee SHA256SUMS
           for f in *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done
           ls -lh

@@ -45,4 +45,12 @@ PHP 7.4 has been end-of-life since 28 Nov 2022.
   failed` until the flag went in. Regex throughput is therefore lower than the 8.x
   builds. Fixing it means building 7.4 against a newer external PCRE2, which is not
   worth it for a version nobody runs for speed.
-Licences for PHP and every statically linked dependency ship in `licenses-<arch>.tar.gz`.
+Licences for PHP and every statically linked dependency ship in `licenses-<arch>.tar.gz`
+(macOS) and `licenses-linux-<arch>.tar.gz` (Linux).
+
+**Linux (from the build that adds the lanes, rexenv's Linux port L8):**
+`php-7.4.33-{cli,fpm}-linux-{x86_64,aarch64}.tar.gz` — fully static musl ELFs built by the
+same script on `ubuntu-24.04` / `ubuntu-24.04-arm`, the shape of static-php.dev's bulk 8.x Linux
+builds. Same source, same patches, same extension set; the gates read `ldd`/`file` instead of
+`otool`, and there is no deployment-target floor to assert (a static ELF runs on any kernel a
+2020s distro ships).
