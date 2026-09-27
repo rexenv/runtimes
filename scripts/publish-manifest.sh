@@ -145,7 +145,7 @@ RELEASE_TAG_FOR() {
 # been run against rexenv's wrapper. Raising it here without raising it there
 # publishes entries every installed app silently drops.
 # `../rexenv/scripts/check-php-pins.sh` compares the two.
-ADMINER_PIN="5.4.2"
+ADMINER_PIN="6.1.1"
 ADMINER_MAX_MAJOR="6"
 ADMINER_REPO="vrana/adminer"
 ADMINER_BASE="https://github.com/$ADMINER_REPO/releases/download"
