@@ -1,0 +1,160 @@
+# rexenv's bar on the release runners, RUN FROM rexenv/runtimes while rexenv/rexenv is
+# private (free minutes here; see rexenv-release.yml for why and for the secret it needs).
+# The BAR on every release runner, without cutting a tag.
+#
+# `release.yml` runs scripts/verify.sh on macos-14, windows-latest, ubuntu-22.04 and
+# ubuntu-22.04-arm before it builds anything. A red bar there costs a tag (v0.8.8's first
+# run, 27 Sep 2026: macOS and Windows red in verify.sh, and the step's `bash -e` swallowed
+# the log). This workflow is the same step on the same runners, on demand, with the log
+# printed and kept — so the bar is made green here first and the next tag builds.
+#
+# Manual only. It changes nothing and publishes nothing.
+name: rexenv verify.sh (from runtimes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The rexenv/rexenv ref to check (branch, tag or sha)"
+        required: false
+        default: "master"
+      runners:
+        description: "Which runners (comma-separated subset of: macos-14,windows-latest,ubuntu-22.04,ubuntu-22.04-arm)"
+        required: false
+        default: "macos-14,windows-latest"
+      bisect:
+        description: "true = run the bar's stages as SEPARATE steps (lib tests, cli tests, examples, clippy, the rest) instead of one verify.sh — a runner that dies keeps no log of the step it died in, but every finished step's log survives, so this says WHICH stage killed it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Debug info is most of a debug target (the Mac's debug/examples alone is ~13 GB) and
+  # nothing in the bar reads it; without this the Linux runners ran out of disk.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          RUNNERS: ${{ inputs.runners }}
+        run: |
+          set -euo pipefail
+          # jq, not a tr|grep|sed|paste chain: the chain reported a failure on a one-runner
+          # input (27 Sep 2026) and its log did not survive to say which link.
+          list="$(printf '%s' "$RUNNERS" | jq -R -c 'split(",") | map(gsub("\\s";"")) | map(select(length > 0))')"
+          echo "matrix={\"runner\":$list}" >> "$GITHUB_OUTPUT"
+          echo "runners: $list"
+  verify:
+    needs: plan
+    name: verify.sh on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The SOURCE is rexenv/rexenv, private: checked out here with REXENV_SRC_TOKEN, a
+      # fine-grained PAT with Contents: read on that one repository. This workflow lives in
+      # rexenv/runtimes (public) because Actions minutes are free here and the source
+      # repository's free quota ran out on the first release pipeline run (27 Sep 2026);
+      # it moves back the day rexenv/rexenv goes public. NOTE: everything a step prints is
+      # public here — test names, file paths, the bar's log.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+      # A hosted Linux runner has ~14 GB free on /, and verify.sh's debug tests + examples +
+      # two clippy passes need more: both Linux lanes of verify-ci (27 Sep 2026) died at 50
+      # minutes with "The hosted runner lost communication with the server" — starved. Two
+      # answers, both here: the image's preinstalled toolchains nobody here uses go
+      # (~25 GB back), and CARGO_PROFILE_DEV_DEBUG=0 (workflow env) drops the debug info
+      # that is most of a debug target.
+      - name: Free disk on the runner
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+      - name: Install the webview dependencies (Linux only)
+        if: startsWith(matrix.runner, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config file dpkg-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libfuse2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if [ "$(uname -s)" = Darwin ]; then rustup target add aarch64-apple-darwin x86_64-apple-darwin; fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            cli
+      # ── Bisect mode: the same commands verify.sh runs, one per step, so a dying runner
+      #    leaves the finished steps' logs behind. Not the bar — a diagnostic.
+      - name: "bisect 1/5 — lib tests (src-tauri)"
+        if: inputs.bisect
+        run: cd src-tauri && cargo test --lib 2>&1 | tail -40
+      - name: "bisect 2/5 — cli tests"
+        if: inputs.bisect
+        run: cd cli && cargo test 2>&1 | tail -20
+      - name: "bisect 3/5 — examples build"
+        if: inputs.bisect
+        run: cd src-tauri && cargo build --examples 2>&1 | tail -20 && df -h . | tail -1 && free -m | sed -n 2p
+      - name: "bisect 4/5 — clippy, both crates"
+        if: inputs.bisect
+        run: (cd src-tauri && cargo clippy --all-targets -- -D warnings 2>&1 | tail -20) && (cd cli && cargo clippy --all-targets -- -D warnings 2>&1 | tail -10)
+      - name: "bisect 5/5 — the whole bar (everything else is quick)"
+        if: inputs.bisect
+        run: |
+          set +e
+          REXENV_ALLOW_PIPE=1 ./scripts/verify.sh 2>&1 | tee verify.log | tail -60
+          code=${PIPESTATUS[0]}; echo "verify.sh exit $code"; exit $code
+      - name: verify.sh
+        if: ${{ !inputs.bisect }}
+        run: |
+          # STREAMED, not captured: a runner that dies mid-bar ("lost communication" — both
+          # Linux lanes, twice, 27 Sep 2026) uploads no file, and a captured verify.log is the
+          # one thing that could have said where. verify.sh refuses a piped stdout by design
+          # (a pipe hides its exit code from an `&&` chain); REXENV_ALLOW_PIPE=1 is its
+          # sanctioned CI form and PIPESTATUS carries the verdict. A sampler prints memory and
+          # disk every minute beside the output, for the same reason.
+          set +e
+          set -uo pipefail
+          ( while true; do echo "[sampler $(date -u +%H:%M:%S)] $(free -m 2>/dev/null | awk '/Mem:/{print "mem used " $3 "M free " $4 "M"}') $(df -h . | awk 'NR==2{print "disk free " $4}')"; sleep 60; done ) &
+          SAMPLER=$!
+          REXENV_ALLOW_PIPE=1 ./scripts/verify.sh 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          kill $SAMPLER 2>/dev/null
+          echo "verify.sh exit $code"
+          exit $code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-log-${{ matrix.runner }}
+          path: verify.log
+          if-no-files-found: ignore
