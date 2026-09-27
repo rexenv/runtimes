@@ -252,6 +252,17 @@ else
 fi
 
 # ── 3. The serial: read the published one and increment ─────────────────────
+# The serial is read from the COMMITTED document — but Actions checks out the commit the run
+# was TRIGGERED at, not the branch tip. Two runs on the same document approved together
+# both read serial 8 and both wrote 9 (28 Sep 2026, run 36342962997): the second's push was
+# rejected and its rebase conflicted on the document itself, which no retry can resolve.
+# So the checkout is brought to the tip FIRST; the same-document concurrency group then
+# makes the second run read what the first one committed. Local runs (no CI) keep whatever
+# checkout they have — the owner's dry runs need no remote.
+if [ -n "${CI:-}" ]; then
+  git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" pull -q --rebase \
+    || fail "could not bring the checkout to the branch tip — the serial would be read from the commit this run was triggered at"
+fi
 CUR=0
 if [ -f "$DOC" ]; then
   CUR="$(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$DOC" | head -1)"
