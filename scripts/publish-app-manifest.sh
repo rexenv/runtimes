@@ -334,7 +334,10 @@ for attempt in 1 2 3 4 5; do
   git push -q 2>/dev/null && break
   [ "$attempt" -lt 5 ] || fail "push rejected 5 times — main moved under every attempt; run this document again"
   echo "push rejected (attempt $attempt): main moved — rebasing onto it and retrying"
-  git pull -q --rebase || fail "rebase onto the moved main failed — another run touched $DOC?"
+  # The identity again: a rebase re-applies our commit and refuses without one ("empty
+  # ident name" — three of four Linux publishes, 28 Sep 2026, on the retry's first outing).
+  git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" pull -q --rebase \
+    || fail "rebase onto the moved main failed — another run touched $DOC?"
 done
 echo
 echo "published. Installed copies will be offered $V at their next check."
