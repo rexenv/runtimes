@@ -68,7 +68,9 @@ concurrency:
   # nobody asked for.
   # Per DOCUMENT: each has its own serial, so a Windows publish need not wait on a
   # macOS one, and two runs on the same document still queue. The Linux options
-  # are four documents, keyed by their kind+arch words.
+  # are four documents, keyed by their kind+arch words. Two documents publishing at
+  # once DO race on the push to main (27 Sep 2026: five of six were rejected
+  # non-fast-forward); the script rebases and retries, so the groups stay separate.
   group: publish-app-manifest-${{ startsWith(inputs.os, 'Windows') && 'windows' || startsWith(inputs.os, 'Linux') && format('linux-{0}-{1}', contains(inputs.os, 'AppImage') && 'appimage' || 'deb', contains(inputs.os, 'x86_64') && 'x86_64' || 'aarch64') || 'macos' }}
   cancel-in-progress: false
 

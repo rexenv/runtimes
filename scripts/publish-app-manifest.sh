@@ -322,7 +322,20 @@ cp "$WORK/$SIG" "$SIG"
 git add "$DOC" "$SIG"
 git -c user.name="rexenv publisher" -c user.email="rudlinkon@gmail.com" \
   commit -q -m "${DOC%.json}: rexenv $V (serial $SERIAL)"
-git push -q
+# Six documents publish per release, one run each, and the owner approves them from
+# ONE page — so two runs commit within seconds of each other and the second's plain
+# push is rejected as non-fast-forward. Five of six were, 27 Sep 2026 (0.8.8: run
+# 36337960574 and the four Linux ones), and a rerun is no cure: it checks out the
+# run's ORIGINAL commit and pushes from the same stale main. The documents are
+# different files, so the rebase is always clean; the serial was read from THIS
+# document, which no other run touches (the workflow's concurrency group is per
+# document, so two runs on the same document never get here together).
+for attempt in 1 2 3 4 5; do
+  git push -q 2>/dev/null && break
+  [ "$attempt" -lt 5 ] || fail "push rejected 5 times — main moved under every attempt; run this document again"
+  echo "push rejected (attempt $attempt): main moved — rebasing onto it and retrying"
+  git pull -q --rebase || fail "rebase onto the moved main failed — another run touched $DOC?"
+done
 echo
 echo "published. Installed copies will be offered $V at their next check."
 echo "Verify from the rexenv repo: ./scripts/check-app-manifest.sh$(case "$OS" in windows) printf ' --windows';; linux) printf ' --linux %s %s' "$LINUX_KIND" "$LINUX_ARCH";; esac)"
