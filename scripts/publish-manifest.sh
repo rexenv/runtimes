@@ -185,6 +185,9 @@ done
 
 command -v openssl >/dev/null || { echo "openssl required" >&2; exit 1; }
 command -v gh >/dev/null || { echo "gh required" >&2; exit 1; }
+# For `macho_floor` below. Checked here, not at the first binary, so a missing
+# interpreter fails before ~400 MB of downloads rather than after the first one.
+command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT; chmod 700 "$WORK"
 
@@ -451,6 +454,48 @@ if [ -n "$PUBLISHED_ADMINER" ]; then
   ADMINER_VERSIONS=($(printf '%s\n' "${ADMINER_VERSIONS[@]}" | sort -Vu))
 fi
 
+# ── The macOS floor a Mach-O declares, read from its own load commands ────────
+#
+# Not `vtool`/`otool`: those are Xcode tools and this runs on ubuntu-latest,
+# where `vtool` is "command not found" — and inside `FLOOR="$(vtool … | awk …)"`
+# under `set -euo pipefail` that 127 is a SILENT exit. Run 36321683217 (27 Sep
+# 2026) died that way one line after its first hash, so no publish had succeeded
+# since minMacos landed on 23 Sep. The same parse as rexenv's `core/macho.rs`
+# (`min_macos`), which the app uses to judge the same bytes: LC_BUILD_VERSION
+# with platform macOS, else LC_VERSION_MIN_MACOSX; a fat file uses its first
+# slice. Printed the way otool prints it (`12.0`, `12.0.1`). Prints NOTHING for
+# anything it cannot read, and always exits 0 — the caller refuses an empty floor
+# out loud rather than dying without a word.
+macho_floor() {
+  python3 - "$1" <<'PY' 2>/dev/null || true
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    b = f.read(1 << 20)
+start = 0
+if struct.unpack_from(">I", b, 0)[0] == 0xCAFEBABE:        # FAT_MAGIC
+    start = struct.unpack_from(">I", b, 8 + 8)[0]         # first fat_arch.offset
+    with open(sys.argv[1], "rb") as f:
+        f.seek(start); b = f.read(1 << 20); start = 0
+magic, _, _, _, ncmds, sizeofcmds = struct.unpack_from("<6I", b, start)
+if magic != 0xFEEDFACF:                                    # MH_MAGIC_64
+    sys.exit(0)
+at, end = start + 32, start + 32 + sizeofcmds
+v = None
+for _ in range(ncmds):
+    cmd, size = struct.unpack_from("<II", b, at)
+    if size < 8 or at + size > end:
+        sys.exit(0)
+    if cmd == 0x32 and struct.unpack_from("<I", b, at + 8)[0] == 1:   # LC_BUILD_VERSION, macOS
+        v = struct.unpack_from("<I", b, at + 12)[0]; break
+    if cmd == 0x24:                                                   # LC_VERSION_MIN_MACOSX
+        v = struct.unpack_from("<I", b, at + 8)[0]; break
+    at += size
+if v is not None:
+    x, y, z = v >> 16, (v >> 8) & 0xFF, v & 0xFF
+    print(f"{x}.{y}.{z}" if z else f"{x}.{y}")
+PY
+}
+
 # ── Hash every artifact, from the URL rexenv itself will use ──────────────────
 # Not from a build directory: the digest has to describe the bytes a USER receives.
 ENTRIES=""; KEPT=()
@@ -496,16 +541,14 @@ for V in ${VERSIONS[@]:+"${VERSIONS[@]}"}; do
       # 23 Sep 2026 (its docs/PLAN-macos-13-floor.md §6.5): a macOS 13 or 14 host
       # is offered only an entry whose floor it meets, and an entry with NONE is
       # a build nobody measured, so it is never offered to a legacy host at all.
-      # Licences are text and carry no floor. Read with vtool (LC_BUILD_VERSION's
-      # `minos`, or the older LC_VERSION_MIN_MACOSX's `version`); refuse to
-      # publish a Mach-O whose floor cannot be read rather than guess one.
+      # Licences are text and carry no floor. Read with `macho_floor` (above);
+      # refuse to publish a Mach-O whose floor cannot be read rather than guess one.
       FLOOR=""
       if [ "$KIND" != licenses ]; then
         X="$WORK/x-${V}-${KIND}-${ARCH}"; mkdir -p "$X"
         MEMBER=php; [ "$KIND" = fpm ] && MEMBER=php-fpm
         tar -xzf "$OUT" -C "$X" "$MEMBER" 2>/dev/null || { echo "  → $V $KIND $ARCH: no $MEMBER member" >&2; ok=0; break 2; }
-        FLOOR="$(vtool -show-build "$X/$MEMBER" 2>/dev/null | awk '/ minos /{print $2; exit}')"
-        [ -z "$FLOOR" ] && FLOOR="$(vtool -show-build "$X/$MEMBER" 2>/dev/null | awk '/ version /{print $2; exit}')"
+        FLOOR="$(macho_floor "$X/$MEMBER")"
         if [ -z "$FLOOR" ]; then
           echo "  → $V $KIND $ARCH: cannot read a macOS floor off the binary — not publishing a guess" >&2
           ok=0; break 2
