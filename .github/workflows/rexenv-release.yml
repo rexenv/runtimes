@@ -1,0 +1,405 @@
+# rexenv's release pipeline, RUN FROM rexenv/runtimes while rexenv/rexenv is private.
+#
+# Identical in substance to rexenv/rexenv's .github/workflows/release.yml (the owner's ruling
+# of 27 Sep 2026: every release is built on GitHub, every OS at once, one draft on the tap or
+# nothing) — with two differences forced by where it runs: the source is checked out cross-repo
+# with REXENV_SRC_TOKEN, and the tag must already exist there (this workflow creates no tag;
+# push it from a checkout of rexenv/rexenv, whose pre-push hook checks the version).
+#
+# Why here: a public repository's Actions minutes are free — including macos-14 (10× billed
+# on a private one) and the ubuntu-22.04-arm larger runner — and rexenv/rexenv's quota ran
+# out mid-pipeline. When rexenv/rexenv goes public, delete this file and use its own.
+#
+# Secrets (Settings → Secrets → Actions, this repo): REXENV_SRC_TOKEN (Contents: read on
+# rexenv/rexenv), TAP_TOKEN (Contents: write on rexenv/homebrew-tap).
+name: rexenv release (from runtimes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.8.8 — must match the four manifests at the ref)"
+        required: true
+      ref:
+        description: "The rexenv/rexenv ref to build (default: the tag v<version>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  TAG: v${{ inputs.version }}
+  # Debug info is most of a debug target and nothing in the bar reads it; the Linux
+  # runners ran out of disk under verify.sh without this (27 Sep 2026). The RELEASE
+  # profile is untouched.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  # ── One version, everywhere. A tag that disagrees with the configs would ship a dmg
+  #    whose filename and cask URL never match — fail loudly before any runner spends
+  #    minutes. The check lives in `scripts/check-versions.sh`, the same script a local
+  #    bump runs, so the two cannot drift.
+  versions:
+    name: Version guard
+    runs-on: ubuntu-latest
+    steps:
+      # The SOURCE is rexenv/rexenv, private: checked out here with REXENV_SRC_TOKEN, a
+      # fine-grained PAT with Contents: read on that one repository. This workflow lives in
+      # rexenv/runtimes (public) because Actions minutes are free here and the source
+      # repository's free quota ran out on the first release pipeline run (27 Sep 2026);
+      # it moves back the day rexenv/rexenv goes public. NOTE: everything a step prints is
+      # public here — test names, file paths, the bar's log.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref != '' && inputs.ref || format('v{0}', inputs.version) }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+      - name: The four manifests at the ref agree with the version
+        run: ./scripts/check-versions.sh "${TAG#v}"
+
+  # ── macOS: the universal dmg + the in-app update archive.
+  macos:
+    name: macOS universal dmg (macos-14)
+    needs: versions
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      # The SOURCE is rexenv/rexenv, private: checked out here with REXENV_SRC_TOKEN, a
+      # fine-grained PAT with Contents: read on that one repository. This workflow lives in
+      # rexenv/runtimes (public) because Actions minutes are free here and the source
+      # repository's free quota ran out on the first release pipeline run (27 Sep 2026);
+      # it moves back the day rexenv/rexenv goes public. NOTE: everything a step prints is
+      # public here — test names, file paths, the bar's log.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref != '' && inputs.ref || format('v{0}', inputs.version) }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+      # No `version:` — pnpm/action-setup reads `packageManager` from package.json, so CI
+      # runs the pnpm this repo declares (a pinned 11 beside developers' 12 once made
+      # `pnpm list --prod` disagree with the notices file on Windows CI, 21 Sep 2026).
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust (both Apple targets)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            cli
+      # The pre-commit bar, run as the release bar too. verify.sh refuses a piped stdout
+      # by design; the file redirect is its sanctioned form and `exit $code` carries the
+      # real verdict.
+      - name: verify.sh (lib tests + examples + clippy + tsc)
+        run: |
+          # STREAMED, not captured: a runner that dies mid-bar ("lost communication" — both
+          # Linux lanes, twice, 27 Sep 2026) uploads no file, and a captured verify.log is the
+          # one thing that could have said where. verify.sh refuses a piped stdout by design
+          # (a pipe hides its exit code from an `&&` chain); REXENV_ALLOW_PIPE=1 is its
+          # sanctioned CI form and PIPESTATUS carries the verdict. A sampler prints memory and
+          # disk every minute beside the output, for the same reason.
+          set +e
+          set -uo pipefail
+          ( while true; do echo "[sampler $(date -u +%H:%M:%S)] $(free -m 2>/dev/null | awk '/Mem:/{print "mem used " $3 "M free " $4 "M"}') $(df -h . | awk 'NR==2{print "disk free " $4}')"; sleep 60; done ) &
+          SAMPLER=$!
+          REXENV_ALLOW_PIPE=1 ./scripts/verify.sh 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          kill $SAMPLER 2>/dev/null
+          echo "verify.sh exit $code"
+          exit $code
+      - name: Build the universal dmg
+        run: pnpm release:mac
+      # docs/PUBLISH-TESTING.md §A0, the automatable half: a universal binary is two
+      # binaries in a trench coat, and anything embedded at compile time is embedded per
+      # slice. Add a line here whenever something new is compiled into the binary.
+      - name: "§A0 artefact integrity — per-slice checks"
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/rexenv.app"
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/rexenv_${V}_universal.dmg"
+          test -f "$DMG" || { echo "::error::expected dmg not found: $DMG" >&2; ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/ >&2; exit 1; }
+          [ "$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | wc -l)" -eq 1 ]
+          [ "$(lipo -archs "$APP/Contents/MacOS/rexenv")" = "x86_64 arm64" ]
+          [ "$(lipo -archs "$APP/Contents/MacOS/rex")" = "x86_64 arm64" ]
+          for arch in arm64 x86_64; do
+            lipo -thin "$arch" "$APP/Contents/MacOS/rexenv" -output "/tmp/rexenv-$arch"
+            n=$(strings -a "/tmp/rexenv-$arch" | grep -c Dist_Archive_Command || true)
+            rm -f "/tmp/rexenv-$arch"
+            [ "$n" -gt 0 ] || { echo "::error::Dist_Archive_Command missing from the $arch slice" >&2; exit 1; }
+            echo "slice $arch: Dist_Archive_Command x$n"
+          done
+          codesign --verify --deep --strict "$APP"
+          echo "§A0: all green"
+      # The update archive, and §A0 re-run on the bundle that comes back OUT of it
+      # (release-mac.sh already ran this; a no-op that fails loudly if the build did not).
+      - name: Update archive + §A0 on the extracted bundle
+        run: ./scripts/release-assets.sh --check
+      - name: Stage the assets
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          mkdir -p out
+          B=src-tauri/target/universal-apple-darwin/release/bundle
+          cp "$B/dmg/rexenv_${V}_universal.dmg" out/
+          cp "$B/macos/rexenv_${V}_universal.app.tar.gz" "$B/macos/rexenv_${V}_universal.app.tar.gz.sha256" out/
+          ( cd out && shasum -a 256 "rexenv_${V}_universal.dmg" > "rexenv_${V}_universal.dmg.sha256" && cat ./*.sha256 )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/
+          if-no-files-found: error
+
+  # ── Windows: the per-user NSIS installer (unsigned by ruling, D5) + the in-app update zip.
+  #    `release-windows.sh` pre-cleans for the Windows reason (the DNS agent is our own
+  #    binary and locks the exe), builds `--bundles nsis` only, and ends in
+  #    `release-windows-check.sh` — §A0-windows: one installer, the rex sidecar, PE x64,
+  #    the embedded payload + update key, NotSigned, the zip extracted and re-checked.
+  windows:
+    name: Windows installer (windows-latest)
+    needs: versions
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The SOURCE is rexenv/rexenv, private: checked out here with REXENV_SRC_TOKEN, a
+      # fine-grained PAT with Contents: read on that one repository. This workflow lives in
+      # rexenv/runtimes (public) because Actions minutes are free here and the source
+      # repository's free quota ran out on the first release pipeline run (27 Sep 2026);
+      # it moves back the day rexenv/rexenv goes public. NOTE: everything a step prints is
+      # public here — test names, file paths, the bar's log.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref != '' && inputs.ref || format('v{0}', inputs.version) }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            cli
+      # The same bar as the macOS job, deliberately (ledger #684: a lane that runs less
+      # than verify.sh is a weaker gate nobody declared).
+      - name: verify.sh (lib tests + examples + clippy + tsc)
+        run: |
+          # STREAMED, not captured: a runner that dies mid-bar ("lost communication" — both
+          # Linux lanes, twice, 27 Sep 2026) uploads no file, and a captured verify.log is the
+          # one thing that could have said where. verify.sh refuses a piped stdout by design
+          # (a pipe hides its exit code from an `&&` chain); REXENV_ALLOW_PIPE=1 is its
+          # sanctioned CI form and PIPESTATUS carries the verdict. A sampler prints memory and
+          # disk every minute beside the output, for the same reason.
+          set +e
+          set -uo pipefail
+          ( while true; do echo "[sampler $(date -u +%H:%M:%S)] $(free -m 2>/dev/null | awk '/Mem:/{print "mem used " $3 "M free " $4 "M"}') $(df -h . | awk 'NR==2{print "disk free " $4}')"; sleep 60; done ) &
+          SAMPLER=$!
+          REXENV_ALLOW_PIPE=1 ./scripts/verify.sh 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          kill $SAMPLER 2>/dev/null
+          echo "verify.sh exit $code"
+          exit $code
+      - name: Build the installer (pre-clean + nsis only + §A0-windows)
+        run: pnpm release:win
+      - name: Stage the assets
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          mkdir -p out
+          B=src-tauri/target/release/bundle/nsis
+          cp "$B/rexenv_${V}_x64-setup.exe" "$B/rexenv_${V}_x64.zip" "$B/rexenv_${V}_x64.zip.sha256" out/
+          ( cd out && sha256sum "rexenv_${V}_x64-setup.exe" | awk '{print $1 "  rexenv_'"$V"'_x64-setup.exe"}' > "rexenv_${V}_x64-setup.exe.sha256" && cat ./*.sha256 )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/
+          if-no-files-found: error
+
+  # ── Linux: the deb + AppImage, one lane per arch, both ON THE FLOOR. A deb runs on
+  #    nothing older than the glibc it was linked against, so the runner is Ubuntu 22.04
+  #    (the oldest GitHub offers, and exactly D-L4's floor) and the lane reads the highest
+  #    GLIBC_ symbol version out of the binaries rather than trusting the label.
+  #    `release-linux.sh` ends in `release-linux-check.sh` — §A0-linux: one deb + one
+  #    AppImage for the version and THIS arch, the rex sidecar, the ELF arch, the embedded
+  #    payload + update key, the deb's control/members/polkit action/Depends, and both
+  #    artefacts answering --print-version (what the in-app updater re-checks before
+  #    dpkg -i / the exchange).
+  #
+  #    `ubuntu-22.04-arm` is a GitHub-hosted arm64 runner: free on public repositories, a
+  #    "larger runner" billed per minute on a private one. If the lane cannot find a runner
+  #    the whole release waits — the owner's ruling is all three OSes or nothing, so the
+  #    answer is to pay for the lane or go public, not to ship without aarch64.
+  linux:
+    name: Linux deb + AppImage (${{ matrix.arch }}, Ubuntu 22.04 floor)
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04,     arch: x86_64,  deb_arch: amd64, img_arch: amd64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64, deb_arch: arm64, img_arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      # The SOURCE is rexenv/rexenv, private: checked out here with REXENV_SRC_TOKEN, a
+      # fine-grained PAT with Contents: read on that one repository. This workflow lives in
+      # rexenv/runtimes (public) because Actions minutes are free here and the source
+      # repository's free quota ran out on the first release pipeline run (27 Sep 2026);
+      # it moves back the day rexenv/rexenv goes public. NOTE: everything a step prints is
+      # public here — test names, file paths, the bar's log.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref != '' && inputs.ref || format('v{0}', inputs.version) }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+      # A hosted Linux runner has ~14 GB free on /, and verify.sh's debug tests + examples +
+      # two clippy passes need more: both Linux lanes of verify-ci (27 Sep 2026) died at 50
+      # minutes with "The hosted runner lost communication with the server" — starved. Two
+      # answers, both here: the image's preinstalled toolchains nobody here uses go
+      # (~25 GB back), and CARGO_PROFILE_DEV_DEBUG=0 (workflow env) drops the debug info
+      # that is most of a debug target.
+      - name: Free disk on the runner
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+      # Tauri 2 on Linux links webkit2gtk 4.1 + gtk3 through pkg-config (the check image's
+      # list, scripts/linux-check/Dockerfile) plus what the bundlers need; 22.04's names
+      # (`libfuse2`, not 24.04's `libfuse2t64`).
+      - name: Install the webview and bundler dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates pkg-config file dpkg-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libfuse2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            cli
+      # The same bar. On a Linux host linux-check.sh lints natively and windows-check.sh
+      # is SKIPPED (no cargo-xwin) — verify.sh prints which.
+      - name: verify.sh (lib tests + examples + clippy + tsc)
+        run: |
+          # STREAMED, not captured: a runner that dies mid-bar ("lost communication" — both
+          # Linux lanes, twice, 27 Sep 2026) uploads no file, and a captured verify.log is the
+          # one thing that could have said where. verify.sh refuses a piped stdout by design
+          # (a pipe hides its exit code from an `&&` chain); REXENV_ALLOW_PIPE=1 is its
+          # sanctioned CI form and PIPESTATUS carries the verdict. A sampler prints memory and
+          # disk every minute beside the output, for the same reason.
+          set +e
+          set -uo pipefail
+          ( while true; do echo "[sampler $(date -u +%H:%M:%S)] $(free -m 2>/dev/null | awk '/Mem:/{print "mem used " $3 "M free " $4 "M"}') $(df -h . | awk 'NR==2{print "disk free " $4}')"; sleep 60; done ) &
+          SAMPLER=$!
+          REXENV_ALLOW_PIPE=1 ./scripts/verify.sh 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          kill $SAMPLER 2>/dev/null
+          echo "verify.sh exit $code"
+          exit $code
+      - name: Build the deb + AppImage (+ §A0-linux)
+        run: pnpm release:linux
+      - name: Assert the glibc floor (≤ 2.35, Ubuntu 22.04)
+        run: |
+          set -euo pipefail
+          for f in src-tauri/target/release/rexenv src-tauri/target/release/rex; do
+            max="$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)"
+            echo "$f asks for glibc ≤ $max"
+            [ "$(printf '%s\n2.35\n' "$max" | sort -V | tail -1)" = "2.35" ] || { echo "::error::$f needs glibc $max, above the 22.04 floor (2.35)"; exit 1; }
+          done
+      - name: Stage the assets
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          mkdir -p out
+          B=src-tauri/target/release/bundle
+          cp "$B/deb/rexenv_${V}_${{ matrix.deb_arch }}.deb" "$B/deb/rexenv_${V}_${{ matrix.deb_arch }}.deb.sha256" out/
+          cp "$B/appimage/rexenv_${V}_${{ matrix.img_arch }}.AppImage" "$B/appimage/rexenv_${V}_${{ matrix.img_arch }}.AppImage.sha256" out/
+          cat out/*.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+
+  # ── The draft: every OS's assets on ONE release on the tap. Nothing here builds; it
+  #    only refuses to draft anything unless all four lanes delivered.
+  publish:
+    name: Draft the release on rexenv/homebrew-tap
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+      - name: Every lane delivered
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          mkdir -p out && find staged -type f -exec cp {} out/ \;
+          cd out && ls -la
+          for want in "rexenv_${V}_universal.dmg" "rexenv_${V}_universal.app.tar.gz" \
+                      "rexenv_${V}_x64-setup.exe" "rexenv_${V}_x64.zip" \
+                      "rexenv_${V}_amd64.deb" "rexenv_${V}_amd64.AppImage" \
+                      "rexenv_${V}_arm64.deb" "rexenv_${V}_aarch64.AppImage"; do
+            [ -f "$want" ] || { echo "::error::$want is missing — a lane did not deliver; nothing is drafted"; exit 1; }
+            [ -f "$want.sha256" ] || { echo "::error::$want.sha256 is missing"; exit 1; }
+            sha256sum -c "$want.sha256" >/dev/null || { echo "::error::$want does not match its .sha256"; exit 1; }
+          done
+          echo "all eight assets present, every digest matches"
+      - name: Draft the release on the tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::error::TAP_TOKEN is not set — a fine-grained PAT with contents:write on rexenv/homebrew-tap (docs/RELEASING.md, one-time setup)"; exit 1; }
+          V="${TAG#v}"
+          if gh release view "$TAG" --repo rexenv/homebrew-tap >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists on rexenv/homebrew-tap — never re-issue a version's bytes; bump and tag again"; exit 1
+          fi
+          # The dmg's name must be the only asset ending in `_universal.dmg`: the tap's
+          # update-cask.yml selects the cask's asset by that suffix.
+          gh release create "$TAG" \
+            --repo rexenv/homebrew-tap \
+            --draft \
+            --title "rexenv $V" \
+            --notes "> ⚠️ Draft until docs/PUBLISH-TESTING.md §A (Apple-Silicon launch gate) passes on this exact dmg. Publishing auto-updates the Homebrew cask, and is what makes every asset reachable — a draft's assets 404 for everyone. Then publish the six app-update descriptors in rexenv/runtimes (RELEASING.md step 8). Built on GitHub-hosted runners only: macos-14, windows-latest, ubuntu-22.04 and ubuntu-22.04-arm (the Linux floor, glibc ≤ 2.35 asserted)." \
+            out/*
+          echo "draft release $TAG created on rexenv/homebrew-tap with $(ls out | wc -l) files — run §A on the dmg, then publish it"
