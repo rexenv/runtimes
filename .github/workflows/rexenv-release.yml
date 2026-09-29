@@ -59,6 +59,16 @@ jobs:
           fetch-depth: 1
       - name: The four manifests at the ref agree with the version
         run: ./scripts/check-versions.sh "${TAG#v}"
+      # The release notes ARE the annotated tag's body on rexenv/rexenv (scripts/tag-notes.sh,
+      # rexenv ledger #736). Checked before any runner spends minutes: a lightweight or
+      # subject-only tag fails here, not after the builds. GITHUB_REPOSITORY is this repo on
+      # this runner, so the script is pointed at the source repo explicitly.
+      - name: The tag carries release notes
+        env:
+          GH_TOKEN: ${{ secrets.REXENV_SRC_TOKEN }}
+        run: |
+          set -euo pipefail
+          GITHUB_REPOSITORY=rexenv/rexenv ./scripts/tag-notes.sh "$TAG" > /dev/null
 
   # ── macOS: the universal dmg + the in-app update archive.
   macos:
@@ -366,6 +376,15 @@ jobs:
     needs: [macos, windows, linux]
     runs-on: ubuntu-latest
     steps:
+      # Only scripts/tag-notes.sh, and BEFORE the download: a checkout cleans the workspace.
+      - uses: actions/checkout@v4
+        with:
+          repository: rexenv/rexenv
+          ref: ${{ inputs.ref != '' && inputs.ref || format('v{0}', inputs.version) }}
+          token: ${{ secrets.REXENV_SRC_TOKEN }}
+          fetch-depth: 1
+          sparse-checkout: scripts/tag-notes.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           path: staged
@@ -387,6 +406,7 @@ jobs:
       - name: Draft the release on the tap
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          SOURCE_TOKEN: ${{ secrets.REXENV_SRC_TOKEN }}
         run: |
           set -euo pipefail
           [ -n "$GH_TOKEN" ] || { echo "::error::TAP_TOKEN is not set — a fine-grained PAT with contents:write on rexenv/homebrew-tap (docs/RELEASING.md, one-time setup)"; exit 1; }
@@ -394,12 +414,21 @@ jobs:
           if gh release view "$TAG" --repo rexenv/homebrew-tap >/dev/null 2>&1; then
             echo "::error::release $TAG already exists on rexenv/homebrew-tap — never re-issue a version's bytes; bump and tag again"; exit 1
           fi
+          # The notes are the tag's body and nothing else: they become public on publish, so
+          # no maintainer instruction goes in them — 0.8.8 and 0.8.9 went public with the
+          # draft-gate warning as their notes (fixed by hand 28 Sep 2026).
+          GH_TOKEN="$SOURCE_TOKEN" GITHUB_REPOSITORY=rexenv/rexenv ./scripts/tag-notes.sh "$TAG" > notes.md
           # The dmg's name must be the only asset ending in `_universal.dmg`: the tap's
           # update-cask.yml selects the cask's asset by that suffix.
           gh release create "$TAG" \
             --repo rexenv/homebrew-tap \
             --draft \
             --title "rexenv $V" \
-            --notes "> ⚠️ Draft until docs/PUBLISH-TESTING.md §A (Apple-Silicon launch gate) passes on this exact dmg. Publishing auto-updates the Homebrew cask, and is what makes every asset reachable — a draft's assets 404 for everyone. Then publish the six app-update descriptors in rexenv/runtimes (RELEASING.md step 8). Built on GitHub-hosted runners only: macos-14, windows-latest, ubuntu-22.04 and ubuntu-22.04-arm (the Linux floor, glibc ≤ 2.35 asserted)." \
+            --notes-file notes.md \
             out/*
           echo "draft release $TAG created on rexenv/homebrew-tap with $(ls out | wc -l) files — run §A on the dmg, then publish it"
+          {
+            echo "### ⚠️ rexenv $V is a DRAFT on rexenv/homebrew-tap"
+            echo "Publish only after docs/PUBLISH-TESTING.md §A (Apple-Silicon launch gate) passes on this exact dmg. Publishing auto-updates the Homebrew cask and is what makes every asset reachable — a draft's assets 404 for everyone. Then publish the six app-update descriptors in rexenv/runtimes (RELEASING.md step 8)."
+            echo "Built on GitHub-hosted runners only: macos-14, windows-latest, ubuntu-22.04 and ubuntu-22.04-arm (the Linux floor, glibc ≤ 2.35 asserted)."
+          } >> "$GITHUB_STEP_SUMMARY"
