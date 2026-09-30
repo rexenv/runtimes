@@ -40,7 +40,7 @@ on:
           - "dry-run — download, hash and sign; publish NOTHING"
           - "publish — sign AND commit; every installed rexenv sees it"
       version:
-        description: "Optional: publish this x.y.z instead of the tap's latest (e.g. '0.6.1')."
+        description: "Optional: publish this x.y.z instead of the newest published release on rexenv/rexenv (e.g. '0.6.1')."
         required: false
         default: ""
       os:

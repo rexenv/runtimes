@@ -79,7 +79,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TAP_REPO="${TAP_REPO:-rexenv/homebrew-tap}"
+# The releases live on rexenv/rexenv since 30 Sep 2026 (on the tap before, while the app repo
+# was private). The variable keeps its name so an override still works.
+TAP_REPO="${TAP_REPO:-rexenv/rexenv}"
 # The public half rexenv compiles in (RELEASE_PUBKEY in core/updates.rs). Public
 # by definition — pinning it here is not a secret, it is a tripwire. Signing with
 # any other key produces a document every installed app silently ignores, and
