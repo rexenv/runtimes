@@ -264,6 +264,14 @@ whole document, because it says the document is not ours.
 | `arch` is the one the family carries | PHP rows are `arm64`/`x86_64`; Adminer rows are `any`. A per-arch Adminer row is dropped. |
 | lowercase 64-hex `sha256` | The form the existing digest gate compares. |
 
+**And the publisher's own lock, checked on the bytes about to be signed (2 Oct 2026,
+`scripts/manifest-guard.py`):** `manifest.json` is the macOS document and it is FROZEN —
+every shipped macOS build keeps a row it does not understand, so a row carrying `os` (a
+Windows or Linux build, once those documents exist) or an `arch` the family does not resolve
+on a Mac would be published to Macs that cannot run it. The guard refuses any row with an
+`os` key and any `arch` outside the table above, per family; `--self-test` proves it against
+the shapes it refuses. rexenv's readers hold the other half (ledger #755).
+
 Plus a **monotonic `serial`**: the app refuses any document whose serial is not
 higher than the highest it has ever accepted. Without it, a host that keeps serving
 an older validly-signed manifest could hold a user on a known-CVE patch forever —

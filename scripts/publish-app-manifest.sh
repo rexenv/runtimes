@@ -128,6 +128,7 @@ fail() { echo "publish-app-manifest: $*" >&2; exit 1; }
 
 command -v gh >/dev/null || fail "gh is required"
 command -v openssl >/dev/null || fail "openssl is required"
+command -v python3 >/dev/null || fail "python3 is required (scripts/manifest-guard.py)"
 
 # ── The key, either way in ───────────────────────────────────────────────────
 if [ -n "${REXENV_MANIFEST_KEY:-}" ]; then
@@ -293,6 +294,16 @@ cat > "$WORK/$DOC" <<JSON
   }
 }
 JSON
+
+# ── The document carries only what its FILE says it carries ──────────────────
+#
+# Each OS reads ITS document and the unsuffixed one is macOS's, frozen: a release carrying
+# `os` in the macOS file, or one marked for another OS in a per-OS file, is refused here on
+# the bytes about to be signed (rexenv docs/TODO.md "Update catalogs across OSes"; the
+# reader refuses the same shapes as malformed — rexenv ledger #755). This script writes no
+# `os` today; the guard is what keeps that true. `scripts/manifest-guard.py --self-test`.
+python3 scripts/manifest-guard.py --document "$OS" "$WORK/$DOC" \
+  || fail "the document is not a $OS document (see above) — refusing to sign"
 
 # rexenv only accepts an artifact URL under a compiled-in releases/download
 # prefix. Checked here so a wrong host fails in this run rather than silently

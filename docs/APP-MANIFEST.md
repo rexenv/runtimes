@@ -135,6 +135,14 @@ broken update, or as silence:
 - **A URL outside the `releases/download/` prefixes rexenv allows.** Otherwise the
   descriptor would be signed, valid, and refused by every install.
 - **A signature that does not verify against its own key.**
+- **A document that is not its FILE's** (2 Oct 2026, `scripts/manifest-guard.py`): a release
+  carrying `os` inside the unsuffixed macOS document, or one marked for another OS inside a
+  per-OS document, is refused on the bytes about to be signed. The macOS documents are
+  frozen — every shipped macOS build keeps a row it does not understand — so this is the
+  publisher's half of the lock rexenv's readers hold from theirs (ledger #755: a row marked
+  for another OS is dropped, a release marked for another OS is refused as malformed). The
+  script writes no `os` today; the guard keeps that true when the per-OS documents arrive.
+  `scripts/manifest-guard.py --self-test` proves it against the shapes it refuses.
 
 ## 5. The serial, and why publishing is a commit
 

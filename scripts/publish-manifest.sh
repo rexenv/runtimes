@@ -613,6 +613,19 @@ OUT_DIR="."
 printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' \
   "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > "$OUT_DIR/manifest.json"
 
+# ── The document carries only what its FILE says it carries ──────────────────
+#
+# `manifest.json` is the macOS document and it is FROZEN: every shipped macOS build keeps
+# a row it does not understand, so a row carrying `os` (a Windows or Linux PHP build) or an
+# arch spelling rexenv's `Family::arch_ok` does not resolve would be published to Macs that
+# cannot run it (rexenv docs/TODO.md "Update catalogs across OSes", ruled 13 Sep 2026; the
+# reader's own lock is rexenv ledger #755). Checked HERE, on the bytes about to be signed —
+# this script writes no `os` today, and that is exactly the kind of fact a guard exists to
+# keep true when the per-OS documents arrive. `scripts/manifest-guard.py --self-test` proves
+# the guard against the shapes it refuses.
+python3 scripts/manifest-guard.py --document macos "$OUT_DIR/manifest.json" \
+  || { echo "refusing to sign: the document is not a macOS document (see above)" >&2; exit 1; }
+
 # ── Nothing the published document carries may DISAPPEAR ──────────────────────
 #
 # The manifest is a REPLACEMENT document, so every publish can silently delete.
