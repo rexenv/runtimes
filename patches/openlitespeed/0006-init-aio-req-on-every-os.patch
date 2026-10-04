@@ -1,0 +1,31 @@
+OpenLiteSpeed 1.9.3 — initialise HttpSession::m_pAioReq on every OS.
+
+The constructor sets m_pAioReq(NULL) only under
+`#if defined(LS_AIO_USE_LINUX_AIO) || IOURING || defined(LS_AIO_USE_AIO)`,
+but HttpSession::releaseResources() does `if (m_pAioReq) cancelReleaseAio();`
+unconditionally at the end of every request. On macOS (no AIO backend) the
+member is whatever the heap held: on macOS 26 it was usually zero, on macOS 15
+the server died with SIGSEGV in 10 of 20 runs (HttpSession::releaseResources()
++ 140, the "pointer" being ASCII text), and on the macos-15 CI runner on the
+first request. AddressSanitizer pins it deterministically on any macOS:
+  SEGV in LsAioReq::isPending() ← HttpSession::cancelReleaseAio()
+  ← HttpSession::releaseResources(), x0 = 0xbebebebebebebebe (uninitialised).
+Found by rexenv/runtimes' build gate, 4 Oct 2026. Upstreamable as-is.
+
+diff --git a/src/http/httpsession.cpp b/src/http/httpsession.cpp
+index ceb73c1..e5077f0 100644
+--- a/src/http/httpsession.cpp
++++ b/src/http/httpsession.cpp
+@@ -171,9 +171,10 @@ HttpSession::HttpSession()
+     , m_iVHostAccess(0)
+     , m_lockMtHolder(0)
+     , m_pAiosfcb(NULL)
+-#if defined(LS_AIO_USE_LINUX_AIO) || IOURING || defined(LS_AIO_USE_AIO)
++    /* Unconditional: releaseResources() tests m_pAioReq on every OS, so on a
++     * build with no AIO backend (macOS, the BSDs) an uninitialised member was
++     * read as a pointer at the end of every request. */
+     , m_pAioReq(NULL)
+-#endif
+     , m_sn(1)
+     , m_pReqParser(NULL)
+     , m_sessSeq(ls_atomic_add_fetch(&s_m_sessSeq, 1)) // ok to overflow / wrap around

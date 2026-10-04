@@ -17,6 +17,9 @@ corresponding source of this GPL-3.0 program is on this page.
   and platform to openlitespeed.org) and the QUIC.cloud IP download.
 - `0005` the server no longer runs `dseditgroup`/`usermod` at every start unless
   it is root and the `lsadm` user exists.
+- `0006` `HttpSession::m_pAioReq` is initialised on every OS — upstream left it
+  uninitialised wherever there is no AIO backend (macOS), and read it at the end of
+  every request: SIGSEGV in half the runs on macOS 15.
 
 No admin console is used or needed (`disableWebAdmin 1`); no lsphp is shipped —
 rexenv sends PHP to its own php-fpm pools over FastCGI.

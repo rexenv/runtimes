@@ -26,6 +26,8 @@
 #   0003-runtime-tmp-dir        LSWS_TMP_DIR replaces the compiled-in /tmp/lshttpd
 #   0004-no-remote-fetch        `noRemoteFetch 1`: no release check, no quic.cloud
 #   0005-group-change-only-as-root  no dseditgroup/usermod at every start
+#   0006-init-aio-req-on-every-os  an uninitialised pointer read at the end of every
+#                              request on macOS (SIGSEGV 10/20 on macOS 15)
 #   boringssl-lstls            the LSTLS accessors lsquic expects
 #
 # ─── Dependencies, all built static from pinned sources ──────────────────────
