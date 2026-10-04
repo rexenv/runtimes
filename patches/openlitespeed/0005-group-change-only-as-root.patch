@@ -1,0 +1,31 @@
+OpenLiteSpeed 1.9.3 — add lsadm to the server's group only as root, only if lsadm exists.
+
+configServerBasics() runs, on EVERY start and every config test,
+  macOS:  dseditgroup -o edit -a lsadm -t user <group>
+  Linux:  usermod -a -G <group> lsadm
+  BSD:    pw usermod lsadm -G <group>
+with no check of who is running it. As an ordinary user (rexenv never runs
+OpenLiteSpeed as root) it always fails, and on macOS dseditgroup prints
+"Username and password must be provided." into the server's stdout — found by the
+build gate, 4 Oct 2026. As root it edits the host's group database at every start.
+Guarded on getuid() == 0 and getpwnam("lsadm") — the same two conditions
+fixConfDirsPermission() a few lines below already requires. Upstreamable.
+
+diff --git a/src/main/httpserver.cpp b/src/main/httpserver.cpp
+index b5c37db..6fb8556 100644
+--- a/src/main/httpserver.cpp
++++ b/src/main/httpserver.cpp
+@@ -4185,7 +4185,12 @@ int HttpServerImpl::configServerBasics(int reconfig, const XmlNode *pRoot)
+ #if defined(macintosh) || defined(__APPLE__) || defined(__APPLE_CC__)
+         snprintf(syscmd, 1024, "dseditgroup -o edit -a lsadm -t user %s", MainServerConfigObj.getGroup());
+ #endif
+-        if (*syscmd)
++        /* Only root can add a user to a group, and only a host with the lsadm
++         * user has one to add. Unguarded, every start by an ordinary user ran
++         * dseditgroup/usermod, failed, and printed "Username and password must
++         * be provided." (macOS) into stdout — and as root it edits the system's
++         * group database on every start. */
++        if (*syscmd && getuid() == 0 && getpwnam("lsadm") != NULL)
+             ::system(syscmd);
+ 
+         return 0;

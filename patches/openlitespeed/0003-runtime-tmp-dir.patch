@@ -1,0 +1,335 @@
+OpenLiteSpeed 1.9.3 — the runtime directory comes from LSWS_TMP_DIR.
+
+Upstream compiles DEFAULT_TMP_DIR="/tmp/lshttpd" and PID_FILE in. Everything
+the server keeps at runtime lands there: the pid file, the graceful-restart pid,
+swap, the .rtreport/.status links, the cgid socket, per-vhost lsapi sockets, the
+config-test log, core backups — and the system shm fallback is /tmp/ols/shm.
+rexenv runs one OpenLiteSpeed per site, as the user, so two sites on one machine
+would share one pid file (the second refuses to start: "already running") and
+one cgid socket. And nothing of rexenv's may live outside its app-data root.
+
+With LSWS_TMP_DIR=/abs/path set:
+  - every DEFAULT_TMP_DIR use resolves under it (src/util/tmpdir.cpp);
+  - the default pid file is $LSWS_TMP_DIR/lshttpd.pid (OLS_PID_FILE still wins);
+  - the shm fallback is $LSWS_TMP_DIR/shm/ instead of /tmp/ols/shm/.
+Unset, behaviour is upstream's except GRACEFUL_PID_FILE, which upstream spelled
+"/tmp/lshttpdgraceful.pid" (a missing slash; dist/bin/lswsctrl reads
+/tmp/lshttpd/graceful.pid) and is now "<dir>/graceful.pid".
+
+DEFAULT_TMP_DIR became a function call deliberately: any site that string-
+concatenates it stops compiling, so the compiler — not a grep — proves every use
+was converted. src/modules/modreqparser keeps a literal "/tmp/lshttpd/"; it is
+not built (MOD_REQPARSER is OFF upstream and here).
+
+diff --git a/src/config.h.cmake b/src/config.h.cmake
+index b812be9..b867cd0 100644
+--- a/src/config.h.cmake
++++ b/src/config.h.cmake
+@@ -4,8 +4,25 @@
+ #include <lsquic.h>
+ 
+ #define LS_ENABLE_SPDY 1
+-#define DEFAULT_TMP_DIR "/tmp/lshttpd"
+-#define PID_FILE        "/tmp/lshttpd/lshttpd.pid"
++/* The server's runtime directory (pid files, swap, status links, the cgid and
++ * per-vhost sockets, the config-test log, core backups). Upstream compiles it in,
++ * so every server on a host shares ONE directory, ONE pid file and ONE cgid
++ * socket — a second server refuses to start ("already running") or steals the
++ * first one's socket. LSWS_TMP_DIR overrides it at runtime (src/util/tmpdir.cpp).
++ * DEFAULT_TMP_DIR is a FUNCTION CALL on purpose: a site that string-concatenates
++ * it no longer compiles, so the compiler proves every use was converted. */
++#define LS_BUILTIN_TMP_DIR "/tmp/lshttpd"
++#define PID_FILE        LS_BUILTIN_TMP_DIR "/lshttpd.pid"
++#ifdef __cplusplus
++extern "C" {
++#endif
++const char *ls_tmp_dir(void);          /* LSWS_TMP_DIR, else LS_BUILTIN_TMP_DIR; no trailing '/' */
++int ls_tmp_dir_overridden(void);       /* 1 when LSWS_TMP_DIR is in effect */
++const char *ls_tmp_file(const char *name); /* "<tmp dir>/<name>", interned per name */
++#ifdef __cplusplus
++}
++#endif
++#define DEFAULT_TMP_DIR ls_tmp_dir()
+ 
+ #define PACKAGE_VERSION "@CMAKE_PROJECT_VERSION@"
+ #define LS_MODULE_VERSION_INFO "\tlsquic " LSQUIC_VERSION_STR "\n\tmodgzip 1.1\n\tcache 1.66\n\tmod_security 1.4 (with libmodsecurity v3.0.15)\n"
+diff --git a/src/http/httpvhost.cpp b/src/http/httpvhost.cpp
+index c027872..322f2e8 100644
+--- a/src/http/httpvhost.cpp
++++ b/src/http/httpvhost.cpp
+@@ -1589,10 +1589,13 @@ static int buildUdsSocket(char *buf, int max_len, const char *pVhostName,
+     char *p = buf;
+     int vhost_len = strlen(pVhostName);
+     int app_name_len = strlen(pAppName);
+-    if (vhost_len + app_name_len > max_len - 24 - 1)
+-        vhost_len = max_len - 24 - app_name_len - 1;
+-    memcpy(p, "uds://tmp/lshttpd/", 18);
+-    p += 18;
++    /* "uds:/" + the runtime dir + "/" — upstream hardcoded "uds://tmp/lshttpd/". */
++    int prefix_len = snprintf(p, max_len, "uds:/%s/", DEFAULT_TMP_DIR);
++    if (prefix_len < 0 || prefix_len >= max_len - 6)
++        return 0;
++    if (vhost_len + app_name_len > max_len - prefix_len - 6 - 1)
++        vhost_len = max_len - prefix_len - 6 - app_name_len - 1;
++    p += prefix_len;
+     if (vhost_len < 0)
+         app_name_len += vhost_len;
+     else
+@@ -1605,7 +1608,7 @@ static int buildUdsSocket(char *buf, int max_len, const char *pVhostName,
+     p += app_name_len;
+     memcpy(p, ".sock", 6);
+     p += 5;
+-    for (char *p1 = &buf[18]; *p1; ++p1)
++    for (char *p1 = &buf[prefix_len]; *p1; ++p1)   /* was &buf[18]: the old prefix length */
+     {
+         if (*p1 == '/')
+             *p1 = '_';
+diff --git a/src/main/httpserver.cpp b/src/main/httpserver.cpp
+index ead2295..b0248d0 100644
+--- a/src/main/httpserver.cpp
++++ b/src/main/httpserver.cpp
+@@ -168,6 +168,15 @@ static int s_curPid = 0;
+ //int     SslContext::s_iEnableMultiCerts = 0;
+ static int s_lsquic_inited;
+ 
++/* "<scheme><tmp dir>/<name>" built once per name — the two socket defaults below
++ * used to be string literals concatenated with DEFAULT_TMP_DIR. */
++static const char *ls_uds_in_tmp(const char *scheme, const char *name)
++{
++    char achBuf[600];
++    snprintf(achBuf, sizeof(achBuf), "%s%s", scheme, ls_tmp_file(name));
++    return strdup(achBuf);
++}
++
+ const char *sStatDir = DEFAULT_TMP_DIR;
+ 
+ static void sigchild(int sig)
+@@ -260,7 +269,7 @@ private:
+         HttpMime::setMime(&m_httpMime);
+         m_serverContext.allocateInternal();
+         HttpRespHeaders::buildCommonHeaders();
+-        m_sRTReportFile = DEFAULT_TMP_DIR "/.rtreport";
++        m_sRTReportFile = ls_tmp_file(".rtreport");
+         SslContext::setSniLookupCb(VHostMapFindSslContext);
+         memset(m_pAutoUpdFetch, 0, sizeof(m_pAutoUpdFetch));
+     }
+@@ -2309,7 +2318,7 @@ int HttpServerImpl::startListeners(const XmlNode *pRoot)
+ }
+ #define DEFAULT_ADMIN_FCGI_NAME     "AdminPHP"
+ #define DEFAULT_ADMIN_PHP_FCGI      "$VH_ROOT/fcgi-bin/admin_php"
+-#define DEFAULT_ADMIN_PHP_FCGI_URI  "UDS:/" DEFAULT_TMP_DIR "/admin_php.sock"
++#define DEFAULT_ADMIN_PHP_FCGI_URI  ls_uds_in_tmp("UDS:/", "admin_php.sock")
+ #define ADMIN_PHP_SESSION           "$SERVER_ROOT/admin/tmp"
+ 
+ 
+@@ -2722,7 +2731,10 @@ int HttpServerImpl::configSysShmDirs(ConfigCtx *pConfigCtx, char *pConfDir)
+             pRamdisk = achDir;
+     }
+     pConfigCtx->initOcspCachePath(pRamdisk);
+-    snprintf(achDir, MAX_PATH_LEN, "/tmp/%s/shm/", pAppSuffix);
++    if (ls_tmp_dir_overridden())
++        snprintf(achDir, MAX_PATH_LEN, "%s/shm/", DEFAULT_TMP_DIR);
++    else
++        snprintf(achDir, MAX_PATH_LEN, "/tmp/%s/shm/", pAppSuffix);
+     if (LsShm::addBaseDir(achDir) != LSSHM_OK)
+         LS_ERROR("Add backup directory 1 failed! '%s'", achDir);
+ 
+@@ -4338,7 +4350,7 @@ int HttpServerImpl::configIpToLoc(const XmlNode *pNode)
+ }
+ 
+ 
+-#define DEFAULT_LSRECAPTCHA_SOCK    "uds:/" DEFAULT_TMP_DIR "/lsrecaptcha.sock"
++#define DEFAULT_LSRECAPTCHA_SOCK    ls_uds_in_tmp("uds:/", "lsrecaptcha.sock")
+ int HttpServerImpl::configLsrecaptchaWorker(const XmlNode *pNode)
+ {
+     const char *pName = "lsrecaptcha";
+@@ -5193,7 +5205,7 @@ int HttpServerImpl::initLscpd()
+ 
+     //configServerBasic2
+     VMemBuf::setMaxAnonMapSize(20 * 1024 * 1024);
+-    setSwapDir(DEFAULT_TMP_DIR "/swap");
++    setSwapDir(ls_tmp_file("swap"));
+ 
+     ls_snprintf(achBuf, 256, "%s/tmp/ocspcache/",
+                 mainServerConfig.getServerRoot());
+@@ -5419,7 +5431,7 @@ int HttpServerImpl::initLscpd()
+     CgidWorker * pWorker = (CgidWorker *)ExtAppRegistry::addApp(
+                             EA_CGID, LSCGID_NAME );
+ 
+-    pWorker->getConfig().setSocket("uds:/" DEFAULT_TMP_DIR "/cgid/cgid.sock");
++    pWorker->getConfig().setSocket(ls_uds_in_tmp("uds:/", "cgid/cgid.sock"));
+     pWorker->start(mainServerConfig.getServerRoot(), NULL,
+                    getuid(), getgid(), getpriority(PRIO_PROCESS, 0));
+     endConfig(0);
+@@ -5468,7 +5480,7 @@ int HttpServerImpl::initSampleServer()
+     ConnLimitCtrl::getInstance().setMaxConns(1000);
+     ConnLimitCtrl::getInstance().setMaxSSLConns(1);
+     //enableScript( 1 );
+-    setSwapDir(DEFAULT_TMP_DIR "1/swap");
++    setSwapDir(ls_tmp_file("1/swap"));
+ 
+     m_accessCtrl.addSubNetControl("192.168.2.0", "255.255.255.0", false);
+     AccessControl::setAccessCtrl(&m_accessCtrl);
+diff --git a/src/main/httpserver.h b/src/main/httpserver.h
+index 3f935c5..e24757f 100644
+--- a/src/main/httpserver.h
++++ b/src/main/httpserver.h
+@@ -25,11 +25,11 @@
+ 
+ #include <inttypes.h>
+ 
+-#define DEFAULT_SWAP_DIR    DEFAULT_TMP_DIR "/swap/"
++#define DEFAULT_SWAP_DIR    ls_tmp_file("swap/")
+ 
+ #define ADMIN_USERDB                "_AdminUserDB"
+ 
+-#define TEST_CONF_LOG           DEFAULT_TMP_DIR "/testconf"
++#define TEST_CONF_LOG           ls_tmp_file("testconf")
+ 
+ 
+ extern const char *sStatDir;
+diff --git a/src/main/lshttpdmain.cpp b/src/main/lshttpdmain.cpp
+index 5b2e8de..b6bb324 100644
+--- a/src/main/lshttpdmain.cpp
++++ b/src/main/lshttpdmain.cpp
+@@ -86,7 +86,9 @@
+ #include <config.h>
+ #include <sys/stat.h>
+ 
+-#define GRACEFUL_PID_FILE   DEFAULT_TMP_DIR "graceful.pid"
++/* Upstream spelled this DEFAULT_TMP_DIR "graceful.pid" — "/tmp/lshttpdgraceful.pid",
++ * a missing slash; dist/bin/lswsctrl reads /tmp/lshttpd/graceful.pid. */
++#define GRACEFUL_PID_FILE   ls_tmp_file("graceful.pid")
+ 
+ /***
+  * Do not change the below format, it will be set correctly while packing the code
+@@ -227,16 +229,26 @@ int LshttpdMain::childSignaled(pid_t pid, int signal, int coredump)
+     if (coredump)
+     {
+ 
+-        if (access(DEFAULT_TMP_DIR "/bak_core", X_OK) == -1)
+-            ::system("mkdir " DEFAULT_TMP_DIR "/bak_core");
+-
++        char achCmd[1200];
++        const char *t = DEFAULT_TMP_DIR;
++        snprintf(achCmd, sizeof(achCmd), "%s/bak_core", t);
++        if (access(achCmd, X_OK) == -1)
++        {
++            snprintf(achCmd, sizeof(achCmd), "mkdir '%s/bak_core'", t);
++            ::system(achCmd);
++        }
+         else
+         {
+-            int status = ::system("expr `ls " DEFAULT_TMP_DIR "/bak_core | wc -l` \\< 5");
++            snprintf(achCmd, sizeof(achCmd), "expr `ls '%s/bak_core' | wc -l` \\< 5", t);
++            int status = ::system(achCmd);
+             if (WEXITSTATUS(status))
+-                ::system("rm " DEFAULT_TMP_DIR "/bak_core/*");
++            {
++                snprintf(achCmd, sizeof(achCmd), "rm '%s'/bak_core/*", t);
++                ::system(achCmd);
++            }
+         }
+-        ::system("mv " DEFAULT_TMP_DIR "/core* " DEFAULT_TMP_DIR "/bak_core");
++        snprintf(achCmd, sizeof(achCmd), "mv '%s'/core* '%s/bak_core'", t, t);
++        ::system(achCmd);
+     }
+     return 0;
+ }
+@@ -770,7 +782,7 @@ const char *LshttpdMain::getPidFile()
+ {
+     const char *pidFile = getenv("OLS_PID_FILE");
+     if (!pidFile)
+-        pidFile = PID_FILE;
++        pidFile = ls_tmp_dir_overridden() ? ls_tmp_file("lshttpd.pid") : PID_FILE;
+ 
+     return pidFile;
+ }
+diff --git a/src/util/CMakeLists.txt b/src/util/CMakeLists.txt
+index 3b4ab4f..610682a 100644
+--- a/src/util/CMakeLists.txt
++++ b/src/util/CMakeLists.txt
+@@ -7,6 +7,7 @@ cmake_minimum_required(VERSION 3.0...3.23)
+ 
+ SET(util_STAT_SRCS
+    httpfetchdriver.cpp
++   tmpdir.cpp
+    httpfetch.cpp
+    linkobjpool.cpp
+    pidfile.cpp
+diff --git a/src/util/tmpdir.cpp b/src/util/tmpdir.cpp
+new file mode 100644
+index 0000000..271556f
+--- /dev/null
++++ b/src/util/tmpdir.cpp
+@@ -0,0 +1,70 @@
++/*
++ * Runtime override of the server's tmp directory — see src/config.h.cmake.
++ * Not upstream; carried by rexenv/runtimes (patches/openlitespeed/0003).
++ */
++#include <config.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static char s_tmpDir[512];
++static int  s_overridden = 0;
++static pthread_once_t s_once = PTHREAD_ONCE_INIT;
++
++static void initTmpDir(void)
++{
++    const char *p = getenv("LSWS_TMP_DIR");
++    if (p && *p == '/' && strlen(p) < sizeof(s_tmpDir))
++        s_overridden = 1;
++    else
++        p = LS_BUILTIN_TMP_DIR;
++    memcpy(s_tmpDir, p, strlen(p) + 1);
++    size_t n = strlen(s_tmpDir);
++    while (n > 1 && s_tmpDir[n - 1] == '/')
++        s_tmpDir[--n] = 0;
++}
++
++extern "C" const char *ls_tmp_dir(void)
++{
++    pthread_once(&s_once, initTmpDir);
++    return s_tmpDir;
++}
++
++extern "C" int ls_tmp_dir_overridden(void)
++{
++    pthread_once(&s_once, initTmpDir);
++    return s_overridden;
++}
++
++/* A handful of fixed names, each built once and never freed: the callers keep
++ * the pointer (a member initialiser, a #define used in several places). */
++extern "C" const char *ls_tmp_file(const char *name)
++{
++    static struct { const char *name; char *path; } s_cache[16];
++    static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++    const char *ret = NULL;
++    pthread_mutex_lock(&s_lock);
++    for (size_t i = 0; i < sizeof(s_cache) / sizeof(s_cache[0]); ++i)
++    {
++        if (s_cache[i].name == NULL)
++        {
++            size_t len = strlen(ls_tmp_dir()) + 1 + strlen(name) + 1;
++            char *p = (char *)malloc(len);
++            if (p == NULL)
++                break;
++            snprintf(p, len, "%s/%s", ls_tmp_dir(), name);
++            s_cache[i].name = strdup(name);
++            s_cache[i].path = p;
++            ret = p;
++            break;
++        }
++        if (strcmp(s_cache[i].name, name) == 0)
++        {
++            ret = s_cache[i].path;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&s_lock);
++    return ret ? ret : LS_BUILTIN_TMP_DIR;
++}
