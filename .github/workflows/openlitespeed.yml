@@ -1,0 +1,186 @@
+name: Build OpenLiteSpeed (rexenv's own macOS + Linux build)
+
+# Publishing is manual only, like nginx and PHP 7.4: these artifacts get pinned
+# by hash in rexenv's source, so a release nobody asked for is a hazard.
+#
+# WHY rexenv builds its own OpenLiteSpeed: upstream publishes Linux tarballs only,
+# and the one community macOS build disables the cache module — the reason a
+# WordPress developer wants OpenLiteSpeed at all. Linux uses the SAME recipe
+# instead of upstream's tarball because the patch set changes behaviour rexenv
+# depends on (runtime files under LSWS_TMP_DIR, no phone-home). Windows has no
+# OpenLiteSpeed and never will; rexenv refuses it there. scripts/build-openlitespeed.sh
+# carries the reasoning; rexenv's docs/PLAN-openlitespeed.md the evidence.
+on:
+  # A pull request that touches the recipe BUILDS all four targets and runs every
+  # gate — and cannot publish: the publish job needs `inputs.publish`, which only
+  # a manual dispatch sets. The workflow is new, so this is also how its first
+  # dry run happens before it exists on main.
+  pull_request:
+    paths:
+      - .github/workflows/openlitespeed.yml
+      - scripts/build-openlitespeed.sh
+      - scripts/boringssl-err-data.py
+      - scripts/fcgi-probe.py
+      - patches/openlitespeed/**
+  workflow_dispatch:
+    inputs:
+      ols_version:
+        description: "OpenLiteSpeed version (a litespeedtech/openlitespeed tag without the v)."
+        required: true
+        default: "1.9.3"
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,         os: macos, arch: aarch64 }
+          - { runner: macos-15-intel,   os: macos, arch: x86_64  }
+          # 22.04, not 24.04: the binary links glibc dynamically, and the glibc
+          # it was built against is the floor it demands. 22.04 IS rexenv's floor.
+          - { runner: ubuntu-22.04,     os: linux, arch: x86_64  }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      # macOS runners have clang, cmake, make, perl and python3. Ubuntu needs cmake,
+      # libaio's static archive, libcap's header (the cgi namespace code includes
+      # <sys/capability.h>; nothing links it), and clang for BoringSSL (GCC rejects
+      # its aarch64 assembly); everything else is built from pinned source.
+      - name: Toolchain (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang cmake libaio-dev libcap-dev file >/dev/null
+
+      - name: Build
+        env:
+          OLS_VERSION: ${{ inputs.ols_version || '1.9.3' }}
+        run: bash scripts/build-openlitespeed.sh "${{ matrix.os }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openlitespeed-${{ inputs.ols_version || '1.9.3' }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-${{ matrix.os }}-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { path: staged }
+
+      # Copied from nginx.yml, where each step carries the story of why it exists.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check it by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="openlitespeed-${{ inputs.ols_version }}-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Assert no release asset can be replaced in place
+        run: |
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            exit 1
+          fi
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/ols-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/ols-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/ols-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          V="${{ inputs.ols_version }}"
+          mkdir -p out
+          # Per-target artifacts and their licence archives: never deduped.
+          find staged -type f \( -name "openlitespeed-$V-macos-*.tar.gz" -o -name "openlitespeed-$V-linux-*.tar.gz" \
+                                 -o -name "licenses-openlitespeed-$V-*.tar.gz" \) -exec cp {} out/ \;
+          # Source mirrors and the patch archive: every target fetched the same
+          # bytes; -n keeps the first.
+          find staged -type f -name '*.tar.gz' ! -name "openlitespeed-$V-macos-*" ! -name "openlitespeed-$V-linux-*" \
+            ! -name 'licenses-*' -exec cp -n {} out/ \;
+          cd out
+          for t in macos-aarch64 macos-x86_64 linux-x86_64 linux-aarch64; do
+            [ -f "openlitespeed-$V-$t.tar.gz" ] || { echo "::error::openlitespeed-$V-$t.tar.gz missing"; exit 1; }
+            [ -f "licenses-openlitespeed-$V-$t.tar.gz" ] || { echo "::error::licence archive for $t missing"; exit 1; }
+          done
+          # GPL-3.0: the corresponding source rides the binaries.
+          [ -f "openlitespeed-$V.tar.gz" ] || { echo "::error::OLS source mirror missing"; exit 1; }
+          [ -f "openlitespeed-$V-rexenv-patches.tar.gz" ] || { echo "::error::patch archive missing"; exit 1; }
+          rm -f *.sha256
+          shasum -a 256 *.tar.gz | tee SHA256SUMS
+          for f in *.tar.gz; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          # A BLOCK scalar: multiple subjects are newline-separated (nginx.yml's
+          # first publish learned that the hard way).
+          subject-path: |
+            out/openlitespeed-${{ inputs.ols_version }}-macos-aarch64.tar.gz
+            out/openlitespeed-${{ inputs.ols_version }}-macos-x86_64.tar.gz
+            out/openlitespeed-${{ inputs.ols_version }}-linux-x86_64.tar.gz
+            out/openlitespeed-${{ inputs.ols_version }}-linux-aarch64.tar.gz
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "OpenLiteSpeed ${{ inputs.ols_version }} (build ${{ inputs.build_number }})" \
+            --notes-file RELEASE-NOTES-openlitespeed.md

@@ -1,0 +1,25 @@
+OpenLiteSpeed 1.9.3 — do not crash when statDir is unset and /dev/shm is absent.
+
+configServerBasics(): with no `statDir` directive the server probes /dev/shm;
+when that does not exist (macOS, minimal containers) pValue stays NULL and the
+strcmp() a few lines later dereferences it. The server dies with SIGSEGV before
+writing its first log line — even `openlitespeed -t` exits 139. Measured on
+macOS 26 / arm64, 4 Oct 2026. Fix: fall back to the runtime directory, which is
+what sStatDir already defaults to. Upstreamable as-is.
+
+diff --git a/src/main/httpserver.cpp b/src/main/httpserver.cpp
+index 882dcec..ead2295 100644
+--- a/src/main/httpserver.cpp
++++ b/src/main/httpserver.cpp
+@@ -4106,6 +4106,11 @@ int HttpServerImpl::configServerBasics(int reconfig, const XmlNode *pRoot)
+             {
+                 pValue = "/dev/shm/ols/status";
+             }
++            /* No /dev/shm (macOS, some containers): pValue stayed NULL and the
++             * strcmp() below crashed the server before its first log line. Fall
++             * back to the runtime directory, which is what sStatDir defaults to. */
++            if (pValue == NULL)
++                pValue = DEFAULT_TMP_DIR;
+         }
+         verifyStatDir(pValue);
+         m_sRTReportFile = sStatDir;

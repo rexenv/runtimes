@@ -1,0 +1,100 @@
+OpenLiteSpeed 1.9.3 — `noRemoteFetch 1`: no release check, no QUIC.cloud download.
+
+On its first timer tick and every 30 minutes after, the server (process 1)
+  - GETs https://openlitespeed.org/packages/release?ver=…&os=…&env=…&plat=…,
+    reporting its version, OS and platform, and
+  - downloads https://quic.cloud/ips?ln into $SERVER_ROOT/tmp/ and rewrites
+    admin/conf/quic-cloud-ips.
+Neither has a directive to turn it off. A local development server must work
+offline and must not report on the person running it (measured 4 Oct 2026:
+"HttpFetch: SSL Verify failed" in the log within a second of start).
+`noRemoteFetch 1` at server level makes checkOLSUpdate(),
+asyncDownloadQuicCloudTrustIp(), maybeDownloadQuicCloudTrustIp() and
+downloadQuicCloudTrustIp() return before building a request. Default 0 keeps
+upstream's behaviour. The static Cloudflare list (addCfTrustIp) is not a fetch
+and is untouched.
+
+The keyword is also registered in PlainConf's table (src/main/plainconf.cpp):
+an unregistered server-level directive is logged "Not support [...]" and DROPPED,
+so without that line the directive parses, does nothing, and the fetches still
+fire — which is exactly what the build gate caught on its first run.
+
+diff --git a/src/main/httpserver.cpp b/src/main/httpserver.cpp
+index b0248d0..b5c37db 100644
+--- a/src/main/httpserver.cpp
++++ b/src/main/httpserver.cpp
+@@ -168,6 +168,13 @@ static int s_curPid = 0;
+ //int     SslContext::s_iEnableMultiCerts = 0;
+ static int s_lsquic_inited;
+ 
++/* noRemoteFetch 1 (server level): never contact openlitespeed.org (the release
++ * check, which sends the version, OS and platform) or quic.cloud (the trusted-IP
++ * list) — both fire at the first timer tick and every 30 minutes after. A local
++ * development server must work offline and must not report on its user. Not
++ * upstream; carried by rexenv/runtimes (patches/openlitespeed/0004). */
++static int s_iNoRemoteFetch = 0;
++
+ /* "<scheme><tmp dir>/<name>" built once per name — the two socket defaults below
+  * used to be string literals concatenated with DEFAULT_TMP_DIR. */
+ static const char *ls_uds_in_tmp(const char *scheme, const char *name)
+@@ -1439,6 +1446,8 @@ static char *detectPlat(char *str, int max_len)
+ //autoupdate checking, this only do once per day, won't use much resource
+ void HttpServerImpl::checkOLSUpdate()
+ {
++    if (s_iNoRemoteFetch)
++        return;
+     time_t t = time(NULL);
+     struct tm tstm;
+     struct tm *tl = &tstm;
+@@ -1521,6 +1530,8 @@ int HttpServerImpl::asyncDownloadQuicCloudIpCb(void *pArg, HttpFetch *pHttpFetch
+ 
+ void HttpServerImpl::asyncDownloadQuicCloudTrustIp()
+ {
++    if (s_iNoRemoteFetch)
++        return;
+     char path[4096];
+     struct stat sb;
+ 
+@@ -3054,6 +3065,8 @@ int HttpServerImpl::configAccessDeniedDir(const XmlNode *pNode)
+ 
+ void HttpServerImpl::maybeDownloadQuicCloudTrustIp()
+ {
++    if (s_iNoRemoteFetch)
++        return;
+     HttpFetch fetch;
+     struct stat st;
+     char path[4096];
+@@ -3068,6 +3081,8 @@ void HttpServerImpl::maybeDownloadQuicCloudTrustIp()
+ 
+ int HttpServerImpl::downloadQuicCloudTrustIp()
+ {
++    if (s_iNoRemoteFetch)
++        return LS_FAIL;
+     HttpFetch fetch;
+     char path[4096];
+     const char *pRoot = MainServerConfig::getInstance().getServerRoot();
+@@ -4022,6 +4037,12 @@ int HttpServerImpl::configServerBasics(int reconfig, const XmlNode *pRoot)
+         if (sDisableWebAdmin != NULL)
+             MainServerConfigObj.setDisableWebAdmin(atoi(sDisableWebAdmin));
+ 
++        s_iNoRemoteFetch = ConfigCtx::getCurConfigCtx()->getLongValue(pRoot,
++                           "noRemoteFetch", 0, 1, 0);
++        if (s_iNoRemoteFetch)
++            LS_INFO(ConfigCtx::getCurConfigCtx(), "noRemoteFetch: release check "
++                    "and QUIC.cloud IP download are off");
++
+         procConf.setPriority(ConfigCtx::getCurConfigCtx()->getLongValue(pRoot,
+                              "priority", -20, 20, 0));
+ 
+diff --git a/src/main/plainconf.cpp b/src/main/plainconf.cpp
+index a26821d..19edd0b 100644
+--- a/src/main/plainconf.cpp
++++ b/src/main/plainconf.cpp
+@@ -246,6 +246,7 @@ plainconfKeywords plainconf::sKeywords[] =
+     {"namespaceconf",                            NULL},
+     {"namespaceconfvhadd",                       NULL},
+     {"note",                                     NULL},
++    {"noremotefetch",                            NULL},   // rexenv/runtimes 0004
+     {"ocspcacerts",                              NULL},
+     {"ocsprespmaxage",                           NULL},
+     {"ocspresponder",                            NULL},

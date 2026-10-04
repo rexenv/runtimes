@@ -49,6 +49,7 @@ reviewer-gated Environment for that reason.
 |---|---|
 | **PHP 7.4.33** (cli + fpm, macOS arm64 + x86_64) | static-php.dev publishes 8.0–8.5 only. Every `dl.static-php.dev/.../php-7.4.3*` URL 404s. Homebrew has `php@7.4` bottles, but they bake `/opt/homebrew` paths for both `php.ini` **and** `OPENSSLDIR` — so TLS fails on a Mac without Homebrew, which is exactly rexenv's target machine. |
 | **PHP 8.x** (cli + fpm, macOS arm64 + x86_64) | static-php.dev's "bulk" builds carry `pgsql` and **no `pdo_pgsql`** — while their PDO advertises `pgsql`, so a connection is accepted and then stalls until the server times it out. Laravel's `pgsql` driver IS that PDO call. Measured against PostgreSQL 16/17/18 on 9 Sep 2026; these builds add the driver and PROVE it by connecting (`scripts/build-php.sh` gate 6). Extension parity with the bulk builds is itself a gate — `docs/bulk-modules-<minor>.txt`. |
+| **OpenLiteSpeed** (macOS arm64 + x86_64, Linux x86_64 + aarch64) | Upstream publishes Linux tarballs only, and the one community macOS build turns the cache module off — the reason anyone wants OpenLiteSpeed. One recipe for all four targets (`scripts/build-openlitespeed.sh`) with a patch set rexenv depends on: runtime files under `LSWS_TMP_DIR` instead of a machine-wide `/tmp/lshttpd`, and `noRemoteFetch 1` so the server never reports to openlitespeed.org or downloads from quic.cloud. GPL-3.0: the patch set and every source tarball ride the release. Windows has no OpenLiteSpeed. |
 
 ## The pin contract
 
@@ -155,4 +156,12 @@ attestation, not somebody's laptop.
 
 ```
 Actions → "Build PHP 7.4.33" → Run workflow
+```
+
+OpenLiteSpeed is the one build here with Linux runners too (`ubuntu-22.04`,
+`ubuntu-22.04-arm` — 22.04 because the glibc a binary is built against is the floor
+it demands):
+
+```
+Actions → "Build OpenLiteSpeed" → Run workflow   (publish off first)
 ```
