@@ -18,6 +18,11 @@ on:
         description: "Use spc's pre-built dependency archives. Off = build every dep from source (much slower; use to rule them out as a failure cause)."
         type: boolean
         default: true
+      x86_host:
+        description: "Where the macOS x86_64 half builds. intel = macos-15-intel (GitHub retires its x86_64 macOS runners in Aug 2027); rosetta = the arm64 macos-15 runner under `arch -x86_64` — the path off that clock, on trial."
+        type: choice
+        options: [intel, rosetta]
+        default: intel
 
 permissions:
   contents: write      # create the release
@@ -31,7 +36,7 @@ jobs:
       matrix:
         include:
           - { runner: macos-15,        arch: aarch64 }
-          - { runner: macos-15-intel,  arch: x86_64  }
+          - { runner: "${{ inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel' }}", arch: x86_64, rosetta: "${{ inputs.x86_host == 'rosetta' }}" }
           # The Linux lanes (rexenv's Linux port, L8): fully static musl ELFs,
           # the same shape as static-php.dev's bulk 8.x Linux builds. The build
           # script reads the OS from `uname`; the artifact name carries it.
@@ -59,10 +64,35 @@ jobs:
       # before it compiles anything ("no github token found, skip", then
       # `curl: (56) ... 403`). The job's own token lifts it to 1000/hr and makes
       # the step deterministic rather than dependent on the neighbours.
+      # The x86_64 half on an arm64 runner (x86_host=rosetta): the whole build runs as an x86_64
+      # process tree under Rosetta 2 — spc's x86_64 binary, Apple's clang defaulting to x86_64,
+      # `uname -m` answering x86_64 — so build-php74.sh needs no cross-compile branch, and its own
+      # smoke gates RUN the artifact (under Rosetta: emulated, not native, but executed).
+      - name: Rosetta 2
+        if: matrix.rosetta == 'true'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/uname -m
+
       - name: Build
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+        run: |
+          if [ "${{ matrix.rosetta }}" = "true" ]; then
+            # spc's `doctor --auto-fix` installs missing tools with `brew`, and Homebrew REFUSES
+            # under Rosetta in the ARM prefix ("Cannot install under Rosetta 2 in ARM default
+            # prefix (/opt/homebrew)!", measured on the dev Mac 6 Oct 2026) — which build-php74.sh's
+            # `|| true` swallows. Three trials each died on the next missing tool (autoconf, then
+            # bison 2.3, then re2c). So install them NATIVELY here, before the x86_64 step: arm64
+            # tools run fine from an x86_64 process tree (spc's doctor under Rosetta passed with
+            # them, same day). Bison 3 is keg-only, so it goes first on PATH.
+            brew install autoconf automake libtool re2c bison
+            export PATH="$(brew --prefix bison)/bin:$PATH"
+            echo "bison: $(command -v bison) — $(bison --version | head -1)"
+            arch -x86_64 /bin/bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+          else
+            bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
