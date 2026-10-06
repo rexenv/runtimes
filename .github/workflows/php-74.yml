@@ -79,17 +79,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ matrix.rosetta }}" = "true" ]; then
-            # The first trial (run 37427065669) built all 32 libraries as x86_64 and then died in
-            # php-src's `buildconf`: "autoconf not found". The arm64 image keeps it in
-            # /opt/homebrew/bin, which the x86_64 build did not see; buildconf honours
-            # PHP_AUTOCONF/PHP_AUTOHEADER, so name them absolutely rather than rely on PATH.
-            command -v autoconf >/dev/null || brew install autoconf
-            export PHP_AUTOCONF="$(command -v autoconf)" PHP_AUTOHEADER="$(command -v autoheader)"
-            echo "autoconf: $PHP_AUTOCONF"
-            # The second trial (run 37435783554) then reached php-src's configure and stopped on
-            # "bison 3.0.0 or later is required": macOS's /usr/bin/bison is 2.3, spc's doctor
-            # accepts it, and Homebrew's bison 3 is keg-only. Put it first on PATH.
-            brew list --formula bison >/dev/null 2>&1 || brew install bison
+            # spc's `doctor --auto-fix` installs missing tools with `brew`, and Homebrew REFUSES
+            # under Rosetta in the ARM prefix ("Cannot install under Rosetta 2 in ARM default
+            # prefix (/opt/homebrew)!", measured on the dev Mac 6 Oct 2026) — which build-php74.sh's
+            # `|| true` swallows. Three trials each died on the next missing tool (autoconf, then
+            # bison 2.3, then re2c). So install them NATIVELY here, before the x86_64 step: arm64
+            # tools run fine from an x86_64 process tree (spc's doctor under Rosetta passed with
+            # them, same day). Bison 3 is keg-only, so it goes first on PATH.
+            brew install autoconf automake libtool re2c bison
             export PATH="$(brew --prefix bison)/bin:$PATH"
             echo "bison: $(command -v bison) — $(bison --version | head -1)"
             arch -x86_64 /bin/bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
