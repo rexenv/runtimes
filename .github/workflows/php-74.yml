@@ -79,6 +79,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ matrix.rosetta }}" = "true" ]; then
+            # The first trial (run 37427065669) built all 32 libraries as x86_64 and then died in
+            # php-src's `buildconf`: "autoconf not found". The arm64 image keeps it in
+            # /opt/homebrew/bin, which the x86_64 build did not see; buildconf honours
+            # PHP_AUTOCONF/PHP_AUTOHEADER, so name them absolutely rather than rely on PATH.
+            command -v autoconf >/dev/null || brew install autoconf
+            export PHP_AUTOCONF="$(command -v autoconf)" PHP_AUTOHEADER="$(command -v autoheader)"
+            echo "autoconf: $PHP_AUTOCONF"
             arch -x86_64 /bin/bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
           else
             bash scripts/build-php74.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
