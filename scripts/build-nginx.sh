@@ -78,10 +78,16 @@ cd "nginx-${NGINX_VERSION}"
 # relink and no bottle to bundle. --with-pcre-jit is safe here (pcre2 10.47 has
 # working Apple Silicon JIT; PHP 7.4's ancient bundled 10.35 is why THAT build
 # has JIT off — a different library, a different decision).
+# --with-pcre-opt carries the same -arch/-mmacosx-version-min into PCRE2's OWN build:
+# --with-cc-opt reaches only nginx's objects, so PCRE2 compiled for whatever the
+# compiler defaulted to. Native on macos-15-intel that was x86_64 by luck; under
+# Rosetta on an arm64 runner it was arm64, and the x86_64 link failed with every
+# pcre2_* symbol missing (reproduced on the dev Mac, 6 Oct 2026).
 ./configure \
   --prefix=/opt/rexenv/nginx \
   --with-pcre="../pcre2-${PCRE2_VERSION}" \
   --with-pcre-jit \
+  --with-pcre-opt="-arch ${MAC_ARCH} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
   --without-http_gzip_module \
   --with-cc-opt="-arch ${MAC_ARCH} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
   --with-ld-opt="-arch ${MAC_ARCH} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"

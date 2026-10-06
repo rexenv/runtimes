@@ -25,6 +25,11 @@ on:
         description: "Publish a release. Off = build + run the gates only (use this first)."
         type: boolean
         default: false
+      x86_host:
+        description: "Where the macOS x86_64 half builds. intel = macos-15-intel (GitHub retires its x86_64 macOS runners in Aug 2027); rosetta = the arm64 macos-15 runner under `arch -x86_64` (php-74.yml's shape, PR #16)."
+        type: choice
+        options: [intel, rosetta]
+        default: intel
 
 permissions:
   contents: write      # create the release
@@ -38,11 +43,20 @@ jobs:
       matrix:
         include:
           - { runner: macos-15,       arch: aarch64 }
-          - { runner: macos-15-intel, arch: x86_64  }
+          - { runner: "${{ inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel' }}", arch: x86_64, rosetta: "${{ inputs.x86_host == 'rosetta' }}" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+
+      # The x86_64 half on an arm64 runner (x86_host=rosetta): the build runs as an x86_64
+      # process tree under Rosetta 2. Homebrew refuses to install from inside it, so anything
+      # the build would `brew install` is installed natively first (php-74.yml, PR #16).
+      - name: Rosetta 2
+        if: matrix.rosetta == 'true'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/uname -m
 
       # No toolchain to install: nginx needs a C compiler and make, which every
       # macOS runner has. The ONLY dependency is PCRE2 and the script builds it
@@ -51,7 +65,12 @@ jobs:
       - name: Build
         env:
           NGINX_VERSION: ${{ inputs.nginx_version }}
-        run: bash scripts/build-nginx.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+        run: |
+          if [ "${{ matrix.rosetta }}" = "true" ]; then
+            arch -x86_64 /bin/bash scripts/build-nginx.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+          else
+            bash scripts/build-nginx.sh "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
