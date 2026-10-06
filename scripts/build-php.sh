@@ -118,6 +118,13 @@ PHP_LICENSE="$REPO_ROOT/licenses/PHP-3.01.txt"
 # `swoole_str_*` / `swoole_array_*` were missing, which the function gate caught.
 SWOOLE_5="https://github.com/swoole/swoole-src/archive/refs/tags/v5.1.7.tar.gz"
 SWOOLE_61="https://github.com/swoole/swoole-src/archive/refs/tags/v6.1.7.tar.gz"
+# 8.2 and later pin swoole too. spc's `v6.*` is "the newest 6.x on the day", so the
+# same workflow builds a different swoole every time upstream tags one: v6.2.3 (after
+# the 10 Sep 2026 builds) calls `sw_usleep()` in src/core/misc.cc and declares it
+# nowhere, so 8.3.33 died there on BOTH arm64 and x86_64 (run 37474234647, 6 Oct 2026).
+# 6.2.2 is what every published 8.2–8.5 carries (`phpversion("swoole")` on php-8x-4…7).
+# Moving it is a deliberate bump, with its own build, never a side effect of a date.
+SWOOLE_62="https://github.com/swoole/swoole-src/archive/refs/tags/v6.2.2.tar.gz"
 # One --custom-url FLAG PER SOURCE. Comma-joining them makes spc treat the whole
 # string as a single URL: it fetched
 # "…/v5.1.7.tar.gz,php-src:file:///…patched.tar.gz" and 404'd, having reported it
@@ -133,6 +140,7 @@ CUSTOM_URL_ARGS=()
 case "$PHP_VERSION" in
   8.0.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_5" --custom-url="protobuf:$PROTOBUF_3") ;;
   8.1.*) CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_61") ;;
+  *)     CUSTOM_URL_ARGS+=(--custom-url="swoole:$SWOOLE_62") ;;
 esac
 
 # PHP 8.0 needs one more: `ext/libxml/libxml.c:431` writes
