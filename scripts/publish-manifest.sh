@@ -115,11 +115,15 @@ RELEASE_TAG_FOR() {
   # 11 Sep 2026, two days after rexenv itself had moved to -3..-7 — so publishing
   # would have handed every install the builds the pin bump existed to replace.
   case "$1" in
-    8.1.34) echo "php-8x-3" ;;
-    8.2.32) echo "php-8x-4" ;;
-    8.3.32) echo "php-8x-5" ;;
-    8.4.23) echo "php-8x-6" ;;
-    8.5.8)  echo "php-8x-7" ;;
+    # php-8x-8 (7 Oct 2026): the same five patches rebuilt with a libcurl that has
+    # no c-ares (gate 9), so a site's own curl resolves .rex names. -3…-7 linked
+    # c-ares and are as wrong to offer now as -1/-2 were — and rexenv's
+    # `php_self_hosted_tag` moved to -8 in the same change.
+    8.1.34) echo "php-8x-8" ;;
+    8.2.32) echo "php-8x-8" ;;
+    8.3.32) echo "php-8x-8" ;;
+    8.4.23) echo "php-8x-8" ;;
+    8.5.8)  echo "php-8x-8" ;;
     *)      echo "" ;;
   esac
 }
