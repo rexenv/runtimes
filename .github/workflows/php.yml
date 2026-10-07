@@ -33,6 +33,11 @@ on:
         description: "Use spc's pre-built dependency archives. Off = build every dep from source (much slower; use to rule them out as a failure cause)."
         type: boolean
         default: true
+      x86_host:
+        description: "Where the macOS x86_64 half builds. intel = macos-15-intel (GitHub retires its x86_64 macOS runners in Aug 2027); rosetta = the arm64 macos-15 runner under `arch -x86_64` (php-74.yml's shape, PR #16)."
+        type: choice
+        options: [intel, rosetta]
+        default: intel
 
 permissions:
   contents: write      # create the release
@@ -85,7 +90,7 @@ jobs:
         # everything and both arches of nothing.)
         include:
           - { arch: aarch64, runner: macos-15 }
-          - { arch: x86_64,  runner: macos-15-intel }
+          - { arch: x86_64,  runner: "${{ inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel' }}", rosetta: "${{ inputs.x86_host == 'rosetta' }}" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -102,6 +107,15 @@ jobs:
       # green (run 34335791126). A dependency that buys nothing can still cost
       # you half a matrix.
 
+      # The x86_64 half on an arm64 runner (x86_host=rosetta): the build runs as an x86_64
+      # process tree under Rosetta 2. Homebrew refuses to install from inside it, so anything
+      # the build would `brew install` is installed natively first (php-74.yml, PR #16).
+      - name: Rosetta 2
+        if: matrix.rosetta == 'true'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/uname -m
+
       # spc's --prefer-pre-built asks api.github.com which pre-built dep archives
       # exist; unauthenticated that is 60 req/hr PER IP, shared across the runner
       # fleet, so it 403s intermittently and the build dies before compiling
@@ -110,7 +124,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SKIP_EXTS: ${{ inputs.skip_exts }}
-        run: bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+        run: |
+          if [ "${{ matrix.rosetta }}" = "true" ]; then
+            # What spc's `doctor --auto-fix` and the PostgreSQL gate would `brew install` from
+            # inside Rosetta — refused there — installed natively first. The gate's server is
+            # handed over through PG_BIN_DIR, the script's own "a server you already have" path:
+            # arm64 initdb/pg_ctl run natively, the x86_64 PHP connects over TCP.
+            brew install autoconf automake libtool re2c bison postgresql@16
+            export PATH="$(brew --prefix bison)/bin:$PATH"
+            export PG_BIN_DIR="$(brew --prefix postgresql@16)/bin"
+            echo "bison: $(bison --version | head -1) · postgres: $PG_BIN_DIR"
+            arch -x86_64 /bin/bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+          else
+            bash scripts/build-php.sh "${{ matrix.version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ inputs.prebuilt }}"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
