@@ -70,6 +70,9 @@ jobs:
           # that holds the signing key.
           DRY_RUN: ${{ startsWith(inputs.mode, 'dry-run') }}
           VERSIONS: ${{ inputs.versions }}
+          # Where a dry run writes the document it computed — uploaded below, so
+          # the artifact is what the run WOULD publish, not the tracked file.
+          MANIFEST_DRY_OUT: ${{ runner.temp }}/manifest-dry-run
         run: |
           set -euo pipefail
           [ -n "$REXENV_MANIFEST_KEY" ] || {
@@ -89,14 +92,17 @@ jobs:
 
       # The manifest is what the app will read; keep it whatever the outcome, so a
       # dry run can be inspected and a published one has a record beside the log.
+      # A dry run's document is the one it COMPUTED (MANIFEST_DRY_OUT) — the tracked
+      # manifest.json is the already-published one, and uploading that from a dry
+      # run showed old URLs for a run that would have moved them (37631757183).
       - name: Keep the manifest as an artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: manifest
           path: |
-            manifest.json
-            manifest.json.sig
+            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/manifest.json', runner.temp) || 'manifest.json' }}
+            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/manifest.json.sig', runner.temp) || 'manifest.json.sig' }}
           if-no-files-found: ignore
 
       - name: What a user's app will see

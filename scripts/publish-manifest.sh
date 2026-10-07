@@ -612,8 +612,14 @@ done
 # A dry run writes into the scratch dir, not the working tree: manifest.json and
 # manifest.json.sig are TRACKED files now (they are the published artifact), and
 # a "look, publish nothing" flag that leaves the repo dirty is a flag that lies.
+#
+# MANIFEST_DRY_OUT names that scratch dir when a caller needs to READ the result:
+# the workflow uploads it as the run's `manifest` artifact. Before it did, the dry
+# run's artifact was the TRACKED manifest.json — the already-published document —
+# so a dry run that would have moved five versions to php-8x-8 showed the old -3…-7
+# URLs and digests (run 37631757183, 7 Oct 2026), and only the log said otherwise.
 OUT_DIR="."
-[ "$DRY" -eq 1 ] && OUT_DIR="$WORK/out" && mkdir -p "$OUT_DIR"
+[ "$DRY" -eq 1 ] && OUT_DIR="${MANIFEST_DRY_OUT:-$WORK/out}" && mkdir -p "$OUT_DIR"
 printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' \
   "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > "$OUT_DIR/manifest.json"
 
