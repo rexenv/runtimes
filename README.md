@@ -150,9 +150,13 @@ something that cannot rot.
 
 ## Building
 
-Builds run on GitHub-hosted runners only (`macos-15`, `macos-15-intel`) — never
-on a maintainer's machine — so what produced an artifact is a public log with an
-attestation, not somebody's laptop.
+Builds run on GitHub-hosted runners only — never on a maintainer's machine — so what
+produced an artifact is a public log with an attestation, not somebody's laptop. Both
+macOS slices build on the arm64 `macos-15` runner: the x86_64 half under Rosetta 2
+(`arch -x86_64`), the default since 7 Oct 2026 because GitHub retires its x86_64 macOS
+runners in August 2027. Each workflow's `x86_host: intel` still selects
+`macos-15-intel` until then. Every Rosetta artifact was compared with its Intel-built
+twin first (arch, minos, linked libraries, loaded modules, behaviour; PRs #16, #17).
 
 ```
 Actions → "Build PHP 7.4.33" → Run workflow
