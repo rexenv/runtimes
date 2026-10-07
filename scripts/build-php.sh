@@ -370,6 +370,21 @@ dump_config_log() {
 }
 trap 'rc=$?; [ $rc -ne 0 ] && dump_config_log; exit $rc' EXIT
 
+# libcurl FIRST, on its own, WITHOUT c-ares. spc's curl builder turns c-ares on
+# (`optionalLib('libcares', '-DENABLE_ARES=ON')`) whenever libcares is in the build,
+# and swoole lib-depends on libcares — so every 8.x this script made linked curl to
+# c-ares, which reads /etc/resolv.conf and /etc/hosts and NEVER macOS's
+# /etc/resolver/<tld>: raw `curl_init("https://site.rex/")` in a site died with
+# "Could not resolve host" (rexenv TODO "curl's THREADED resolver", measured on all
+# of 8.1–8.5 again 7 Oct 2026; 7.4, no swoole, never had it). Built here with only
+# the optional libs the full build gave it (HTTP2/BROTLI/ZSTD, measured off 8.3.32's
+# curl_version()), curl takes its threaded resolver — the system's getaddrinfo, which
+# honours /etc/resolver. The full build below finds libcurl installed and skips it
+# (LibraryBase::tryBuild → LIB_STATUS_ALREADY); swoole keeps c-ares for its own DNS.
+# Gate 9 holds both halves.
+say "libcurl (threaded resolver, no c-ares)"
+time ./spc build:libs "curl,openssl,zlib,brotli,nghttp2,zstd" --debug
+
 say "build (cli + fpm)"
 time ./spc build "$EXTS" --with-libs="$LIBS" --build-cli --build-fpm --debug
 
@@ -666,6 +681,19 @@ if grep -q _OnUpdateBool <<<"$SYMTAB"; then
 else
   echo "::warning::zend-symbols: $SYMS exported, NO _OnUpdateBool → no Xdebug on this build"
 fi
+
+# 9. libcurl resolves through the SYSTEM, not c-ares — and lost nothing for it.
+#    c-ares never reads macOS's /etc/resolver/<tld>, so a site's own curl could not
+#    reach any .rex name; the pre-built libcurl above is the fix, and this is what
+#    keeps a later spc (or a reordered build) from quietly linking c-ares again.
+#    The feature list is the one 8.3.32 shipped with, minus nothing.
+CURL_INFO="$("$BIN/php" -n -r '$v=curl_version(); $n=[]; foreach(get_defined_constants(true)["curl"] as $k=>$c){ if(str_starts_with($k,"CURL_VERSION_") && $c>0 && ($v["features"] & $c)) $n[]=substr($k,13);} echo ($v["ares"] ?? ""), "|", implode(",", $n);')"
+CURL_ARES="${CURL_INFO%%|*}"; CURL_FEATURES="${CURL_INFO#*|}"
+[ -z "$CURL_ARES" ] || { echo "::error::libcurl is linked to c-ares $CURL_ARES — .rex names will not resolve in raw curl"; exit 1; }
+for want in ASYNCHDNS HTTP2 BROTLI ZSTD SSL LIBZ; do
+  case ",$CURL_FEATURES," in *",$want,"*) ;; *) echo "::error::libcurl lost $want (has: $CURL_FEATURES)"; exit 1 ;; esac
+done
+echo "curl: threaded resolver (no c-ares) — $CURL_FEATURES"
 
 # ─── Licences ────────────────────────────────────────────────────────────────
 # Static linking puts these libraries INSIDE the binary, so their licences travel
