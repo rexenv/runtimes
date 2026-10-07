@@ -686,14 +686,26 @@ fi
 #    c-ares never reads macOS's /etc/resolver/<tld>, so a site's own curl could not
 #    reach any .rex name; the pre-built libcurl above is the fix, and this is what
 #    keeps a later spc (or a reordered build) from quietly linking c-ares again.
-#    The feature list is the one 8.3.32 shipped with, minus nothing.
-CURL_INFO="$("$BIN/php" -n -r '$v=curl_version(); $n=[]; foreach(get_defined_constants(true)["curl"] as $k=>$c){ if(str_starts_with($k,"CURL_VERSION_") && $c>0 && ($v["features"] & $c)) $n[]=substr($k,13);} echo ($v["ares"] ?? ""), "|", implode(",", $n);')"
-CURL_ARES="${CURL_INFO%%|*}"; CURL_FEATURES="${CURL_INFO#*|}"
+#    The features required are the ones every published 8.1–8.5 carries (mask 0x55a9028d).
+#    The features are read as curl/curl.h's BITS, not through PHP's constants: PHP 8.1
+#    defines no CURL_VERSION_ZSTD / CURL_VERSION_HSTS (8.2 added them) although its
+#    libcurl has both — the first publish run (37583046066) failed 8.1.34 on "lost
+#    ZSTD" with a feature mask identical to 8.3.32's, 0x55a9028d.
+CURL_PROBE="$WORK/curl-gate.php"
+cat > "$CURL_PROBE" <<'PHP'
+<?php
+$v = curl_version();
+$want = ["SSL" => 1 << 2, "LIBZ" => 1 << 3, "ASYNCHDNS" => 1 << 7, "HTTP2" => 1 << 16,
+         "BROTLI" => 1 << 23, "ZSTD" => 1 << 26, "HSTS" => 1 << 28];
+$lost = [];
+foreach ($want as $name => $bit) { if (!($v["features"] & $bit)) { $lost[] = $name; } }
+printf("%s|%s|0x%x", $v["ares"] ?? "", implode(",", $lost), $v["features"]);
+PHP
+CURL_INFO="$("$BIN/php" -n "$CURL_PROBE")"
+CURL_ARES="${CURL_INFO%%|*}"; CURL_REST="${CURL_INFO#*|}"; CURL_LOST="${CURL_REST%%|*}"; CURL_MASK="${CURL_REST#*|}"
 [ -z "$CURL_ARES" ] || { echo "::error::libcurl is linked to c-ares $CURL_ARES — .rex names will not resolve in raw curl"; exit 1; }
-for want in ASYNCHDNS HTTP2 BROTLI ZSTD SSL LIBZ; do
-  case ",$CURL_FEATURES," in *",$want,"*) ;; *) echo "::error::libcurl lost $want (has: $CURL_FEATURES)"; exit 1 ;; esac
-done
-echo "curl: threaded resolver (no c-ares) — $CURL_FEATURES"
+[ -z "$CURL_LOST" ] || { echo "::error::libcurl lost $CURL_LOST (feature mask $CURL_MASK)"; exit 1; }
+echo "curl: threaded resolver (no c-ares) — feature mask $CURL_MASK, SSL/LIBZ/ASYNCHDNS/HTTP2/BROTLI/ZSTD/HSTS all present"
 
 # ─── Licences ────────────────────────────────────────────────────────────────
 # Static linking puts these libraries INSIDE the binary, so their licences travel
