@@ -1,14 +1,14 @@
 {
-  "serial": 5,
-  "generatedAt": "2026-10-08T05:07:39Z",
+  "serial": 6,
+  "generatedAt": "2026-10-09T11:12:03Z",
   "release": {
-    "version": "0.8.12",
-    "url": "https://github.com/rexenv/rexenv/releases/download/v0.8.12/rexenv_0.8.12_aarch64.AppImage",
-    "sha256": "f4102267cb6af4f28ed9c9ea19598b9184b24e9029a20895144a6c347d9bd695",
-    "sizeBytes": 90708488,
+    "version": "0.8.13",
+    "url": "https://github.com/rexenv/rexenv/releases/download/v0.8.13/rexenv_0.8.13_aarch64.AppImage",
+    "sha256": "983fa59778a5211c4a899b85a0147fd06ff3d9be07c6e1e2136052e3ca9db6ca",
+    "sizeBytes": 90753544,
     "minAppVersion": "",
     "minimumSystemVersion": "",
     "notes": "",
-    "publishedAt": "2026-10-08T05:00:24Z"
+    "publishedAt": "2026-10-09T10:23:37Z"
   }
 }
