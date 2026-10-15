@@ -22,7 +22,8 @@ The rules, per document kind:
   macos    no row and no release may carry an `os` key at all (the frozen contract has
            none; "macos" spelled out would still be a field old readers never saw), and
            every row's `arch` is what rexenv's `Family::arch_ok` resolves on a Mac:
-           `arm64` or `x86_64` for php / php-fpm / php-licenses, `any` for adminer (the
+           `arm64` or `x86_64` for php / php-fpm / php-licenses, `any` for adminer and
+           phpmyadmin (the
            app release carries no arch — the macOS bundle is universal).
   windows  a row or release that carries `os` must say "windows".
   linux    a row or release that carries `os` must say "linux".
@@ -37,7 +38,7 @@ import json
 import sys
 
 # rexenv `core/updates.rs`, `Family::arch_ok`: the spellings a Mac resolves, per family.
-MACOS_ARCH_BY_FAMILY = {"php": {"arm64", "x86_64"}, "php-fpm": {"arm64", "x86_64"}, "php-licenses": {"arm64", "x86_64"}, "adminer": {"any"}}
+MACOS_ARCH_BY_FAMILY = {"php": {"arm64", "x86_64"}, "php-fpm": {"arm64", "x86_64"}, "php-licenses": {"arm64", "x86_64"}, "adminer": {"any"}, "phpmyadmin": {"any"}}
 
 
 def rows(doc):
@@ -97,6 +98,8 @@ def self_test():
         (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x64"}]}, "macos"), "a foreign arch spelling (x64) in the macOS manifest"),
         (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "aarch64"}]}, "macos"), "aarch64 — the URL's spelling, not the row's (rexenv wants arm64)"),
         (not ok({"serial": 1, "artifacts": [{"name": "adminer", "version": "5.4.2", "arch": "arm64"}]}, "macos"), "a per-arch adminer row (rexenv wants any)"),
+        (ok({"serial": 1, "artifacts": [{"name": "phpmyadmin", "version": "5.2.4", "arch": "any"}]}, "macos"), "an arch-free phpmyadmin row (the third family)"),
+        (not ok({"serial": 1, "artifacts": [{"name": "phpmyadmin", "version": "5.2.4", "arch": "x86_64"}]}, "macos"), "a per-arch phpmyadmin row (rexenv wants any)"),
         (not ok({"serial": 1, "artifacts": [{"name": "caddy", "version": "2.11.4", "arch": "arm64"}]}, "macos"), "a family rexenv does not resolve"),
         (not ok({"serial": 1, "release": {"version": "0.8.11", "os": "linux"}}, "macos"), "a Linux release in the macOS app manifest"),
         (not ok({"serial": 1, "release": {"version": "0.8.11", "os": "macos"}}, "windows"), "a macOS release in the Windows document"),

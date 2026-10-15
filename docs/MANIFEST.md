@@ -250,6 +250,37 @@ Prefixed rather than guessed from the number — `5.4.2` is a plausible Adminer
 version and a plausible typo for a PHP one, and guessing wrong publishes an entry
 every app drops.
 
+## 2.3 phpMyAdmin — the third family (15 Oct 2026)
+
+rexenv's second database console is phpMyAdmin, a whole PHP tree the app downloads as
+the project's own `phpMyAdmin-<v>-english.zip` and stages beside a config it generates.
+It is the **third family** in this document, the Adminer shape with three differences:
+
+- **Discovery lists `phpmyadmin/phpmyadmin`'s releases** (`RELEASE_5_2_3`-style tags,
+  drafts and prereleases excluded) but **the bytes come from `files.phpmyadmin.net`** —
+  the GitHub release carries no asset, and the project's file server publishes no index.
+  The host prefix the app admits is exactly `https://files.phpmyadmin.net/phpMyAdmin/`;
+  the same server's `/themes/` (where rexenv's dark theme is pinned from) is not a place
+  a manifest row may name.
+- **Our digest must equal the project's.** Every release file has a `.sha256` beside it.
+  The script hashes the bytes it downloaded and REFUSES the version if the project's
+  digest disagrees (or is absent) — the file server handing us something the project did
+  not sign off is a version to drop loudly, never one to publish with the digest we saw.
+- **`PHPMYADMIN_MAX_MAJOR` is evidence** like Adminer's: the newest major whose tree
+  layout and config loader have been run through rexenv's probe
+  (`phpmyadmin::verify_tree` — the tree's own constants + autoloader + `PhpMyAdmin\Config`
+  loading the generated file) on the pinned PHP. phpMyAdmin 6 moves the tree
+  (`libraries/classes/` → `src/`) and its theme format; the app's ceiling keeps a 6.x
+  row from being OFFERED, and the probe at apply time would refuse it anyway. To raise
+  it: `cargo run --example phpmyadmin_check` green against the new major, raise
+  `updates::PHPMYADMIN_MAX_MAJOR`, ship a release, then raise it here.
+  `rexenv/scripts/check-php-pins.sh` compares both pairs and exits non-zero on a
+  ceiling mismatch — and on the pair being ABSENT here, which is the state between the
+  app shipping the family and this section landing.
+
+`arch: "any"`, one row per version, for Adminer's reason. By hand:
+`./scripts/publish-manifest.sh phpmyadmin:5.2.4`.
+
 ## 3. The four limits the app enforces — respect them or entries are dropped
 
 rexenv drops any entry that breaks these, silently and per-entry (one bad row must
@@ -258,10 +289,10 @@ whole document, because it says the document is not ours.
 
 | Limit | Why |
 |---|---|
-| `name` ∈ {`php`, `php-fpm`, `adminer`} | rexenv's resolver is name-generic, and `caddy` runs as a **root LaunchDaemon** on a user's machine. A manifest that can name a binary could name that one — so it names only declared FAMILIES, and each variant states what it grants. |
-| `https://` from `dl.static-php.dev/` or `github.com/rexenv/` | There is no scheme or host constraint anywhere on rexenv's download path, because every URL is normally a compiled-in `format!`. A manifest makes `http://attacker/` expressible. |
-| `version` is on a track the family accepts | **PHP**: a patch of a minor rexenv already ships — per-minor facts (the EOL date, Xdebug availability, the pool port) are compiled in, so a runtime-delivered new MINOR would render with no EOL date and Xdebug silently missing. **Adminer**: a major at or below `ADMINER_MAX_MAJOR`, the newest whose plugin API has been probed against rexenv's wrapper (§2.2). |
-| `arch` is the one the family carries | PHP rows are `arm64`/`x86_64`; Adminer rows are `any`. A per-arch Adminer row is dropped. |
+| `name` ∈ {`php`, `php-fpm`, `adminer`, `phpmyadmin`} | rexenv's resolver is name-generic, and `caddy` runs as a **root LaunchDaemon** on a user's machine. A manifest that can name a binary could name that one — so it names only declared FAMILIES, and each variant states what it grants. |
+| `https://` from `dl.static-php.dev/`, `github.com/rexenv/`, `github.com/vrana/adminer/releases/download/` or `files.phpmyadmin.net/phpMyAdmin/` | There is no scheme or host constraint anywhere on rexenv's download path, because every URL is normally a compiled-in `format!`. A manifest makes `http://attacker/` expressible. |
+| `version` is on a track the family accepts | **PHP**: a patch of a minor rexenv already ships — per-minor facts (the EOL date, Xdebug availability, the pool port) are compiled in, so a runtime-delivered new MINOR would render with no EOL date and Xdebug silently missing. **Adminer**: a major at or below `ADMINER_MAX_MAJOR`, the newest whose plugin API has been probed against rexenv's wrapper (§2.2). **phpMyAdmin**: a major at or below `PHPMYADMIN_MAX_MAJOR`, the newest whose tree the probe has loaded (§2.3). |
+| `arch` is the one the family carries | PHP rows are `arm64`/`x86_64`; Adminer and phpMyAdmin rows are `any`. A per-arch row for either is dropped. |
 | lowercase 64-hex `sha256` | The form the existing digest gate compares. |
 
 **And the publisher's own lock, checked on the bytes about to be signed (2 Oct 2026,
