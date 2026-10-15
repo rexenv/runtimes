@@ -1,7 +1,7 @@
 name: Check for new runtime releases
 
-# The read-only half of the update job. Every morning it asks static-php.dev and
-# Adminer's releases API what they have published above rexenv's pins, subtracts
+# The read-only half of the update job. Every morning it asks static-php.dev,
+# Adminer's and phpMyAdmin's releases APIs what they have published above rexenv's pins, subtracts
 # what the `manifest` release already carries, and — only if something is left —
 # opens or updates one issue saying so. Then a human runs "Publish PHP update
 # manifest".
@@ -9,7 +9,7 @@ name: Check for new runtime releases
 # The FILE NAME stays `discover-php.yml` and the label stays `php-update`: the
 # filename is the schedule cron's identity, and the label is the idempotency key
 # `gh issue list --label` uses, so renaming either orphans the currently-open
-# issue and files a duplicate. Both cover Adminer now; the names are historical.
+# issue and files a duplicate. Both cover Adminer and phpMyAdmin now; the names are historical.
 #
 # It deliberately does NOT publish. The signing key can make every rexenv install
 # download and run arbitrary bytes as the user, so what it signs is a human
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           # --discover needs no signing key and prints ONLY versions on stdout,
-          # one per line, each qualified `php:X` or `adminer:X`. Empty means
+          # one per line, each qualified `php:X`, `adminer:X` or `phpmyadmin:X`. Empty means
           # nothing to tell anyone about.
           ./scripts/publish-manifest.sh --discover > new.txt
           {
@@ -68,7 +68,7 @@ jobs:
           # Idempotent: the label has to exist before `issue list --label` will
           # accept it, and on a fresh repo it does not.
           gh label create "$LABEL" --repo "$REPO" \
-            --color 1D76DB --description "A new PHP or Adminer release is available upstream" \
+            --color 1D76DB --description "A new PHP, Adminer or phpMyAdmin release is available upstream" \
             >/dev/null 2>&1 || true
 
           # The marker is how a re-run recognises it has nothing new to say. Same
@@ -82,7 +82,7 @@ jobs:
           BODY="$(cat <<MD
           $MARKER
           Upstream has published releases that rexenv does not yet offer. Each is
-          qualified by family — \`php:8.4.24\`, \`adminer:6.0.1\` — because unqualified
+          qualified by family — \`php:8.4.24\`, \`adminer:6.0.1\`, \`phpmyadmin:5.2.4\` — because unqualified
           the list reads "8.4.24 6.0.1" and nobody can tell which project is which:
 
           **$VERSIONS**

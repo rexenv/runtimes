@@ -154,6 +154,25 @@ ADMINER_MAX_MAJOR="6"
 ADMINER_REPO="vrana/adminer"
 ADMINER_BASE="https://github.com/$ADMINER_REPO/releases/download"
 
+# ── phpMyAdmin: the THIRD family, the Adminer shape (15 Oct 2026) ─────────────
+#
+# A whole PHP tree (the project's own `phpMyAdmin-<v>-english.zip`), arch-free like
+# Adminer. `PHPMYADMIN_MAX_MAJOR` must equal `updates::PHPMYADMIN_MAX_MAJOR` in the
+# app and is evidence the same way: the newest major whose tree layout and config
+# loader have been run through rexenv's probe (`phpmyadmin::verify_tree`) on the
+# pinned PHP. phpMyAdmin 6 moves the tree (`libraries/classes/` → `src/`), so a 6.x
+# row would be dropped by every installed app — and refused at apply time by the
+# probe if it were not. `../rexenv/scripts/check-php-pins.sh` compares the pair.
+#
+# The bytes are the project's, from its OWN file server — never GitHub's source
+# archive (no vendor/), never a mirror. The host prefix the app admits is exactly
+# `https://files.phpmyadmin.net/phpMyAdmin/` (its `/themes/` is where the dark
+# theme is PINNED from, and a manifest row may not name one).
+PHPMYADMIN_PIN="5.2.3"
+PHPMYADMIN_MAX_MAJOR="5"
+PHPMYADMIN_REPO="phpmyadmin/phpmyadmin"
+PHPMYADMIN_BASE="https://files.phpmyadmin.net/phpMyAdmin"
+
 PINS=(
   "7.4:7.4.33"   # ours, built here — never on static-php.dev
   "8.0:8.0.30"
@@ -168,6 +187,7 @@ DRY=0
 DISCOVER=0
 EXPLICIT=()
 ADMINER_EXPLICIT=()
+PHPMYADMIN_EXPLICIT=()
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
@@ -175,6 +195,7 @@ for a in "$@"; do
     --check-pins)
       printf '%s\n' "${PINS[@]}"
       echo "adminer:$ADMINER_PIN (ceiling: major <= $ADMINER_MAX_MAJOR)"
+      echo "phpmyadmin:$PHPMYADMIN_PIN (ceiling: major <= $PHPMYADMIN_MAX_MAJOR)"
       echo
       echo "Compare with PHP_VERSIONS in rexenv's src-tauri/src/core/binaries.rs."
       exit 0 ;;
@@ -183,6 +204,7 @@ for a in "$@"; do
     # the number: 5.4.2 is a plausible Adminer version and a plausible typo for a
     # PHP one, and guessing wrong publishes an entry every app drops.
     adminer:*) ADMINER_EXPLICIT+=("${a#adminer:}") ;;
+    phpmyadmin:*) PHPMYADMIN_EXPLICIT+=("${a#phpmyadmin:}") ;;
     *) EXPLICIT+=("$a") ;;
   esac
 done
@@ -248,6 +270,7 @@ FIRST_RUN=0
 PUBLISHED=""
 PUBLISHED_PHP=""
 PUBLISHED_ADMINER=""
+PUBLISHED_PHPMYADMIN=""
 # Read through the API, never `raw.githubusercontent.com`: raw is CDN-cached for
 # minutes, so right after a publish it serves the OLD document — and the serial
 # read from it would then REPEAT a serial, which every installed app refuses.
@@ -285,6 +308,8 @@ else
     | sed -n 's/.*"name":"php","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
   PUBLISHED_ADMINER="$(tr '{' '\n' < "$WORK/manifest.json" \
     | sed -n 's/.*"name":"adminer","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
+  PUBLISHED_PHPMYADMIN="$(tr '{' '\n' < "$WORK/manifest.json" \
+    | sed -n 's/.*"name":"phpmyadmin","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
 fi
 SERIAL=$((CUR + 1))
 # A FLOOR, for the one case the read cannot see: the manifest used to be a
@@ -390,6 +415,37 @@ if [ ${#ADMINER_VERSIONS[@]} -gt 0 ]; then
   ADMINER_VERSIONS=($(printf '%s\n' "${ADMINER_VERSIONS[@]}" | sort -Vu))
 fi
 
+# ── phpMyAdmin discovery: the same listing ───────────────────────────────────
+#
+# The project tags releases `RELEASE_5_2_3` on GitHub (no assets there — the zip
+# lives on files.phpmyadmin.net, which publishes no index), so the tag list is the
+# authoritative "what exists" and the file server is where the bytes come from.
+# Drafts and prereleases excluded for the reasons Adminer's block gives.
+PHPMYADMIN_VERSIONS=()
+if [ ${#PHPMYADMIN_EXPLICIT[@]} -gt 0 ]; then
+  PHPMYADMIN_VERSIONS=("${PHPMYADMIN_EXPLICIT[@]}")
+  echo "explicit phpmyadmin versions: ${PHPMYADMIN_VERSIONS[*]} (discovery still runs)" >&2
+fi
+echo "listing phpmyadmin releases newer than ${PHPMYADMIN_PIN}…" >&2
+while read -r tag; do
+  v="${tag#RELEASE_}"; v="${v//_/.}"
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) ;; *) continue ;; esac
+  case "$v" in *.*.*.*) continue ;; esac   # a four-part tag is not an x.y.z the app accepts
+  [ "$(printf '%s\n%s\n' "$PHPMYADMIN_PIN" "$v" | sort -V | tail -1)" = "$v" ] || continue
+  [ "$v" = "$PHPMYADMIN_PIN" ] && continue
+  [ "${v%%.*}" -le "$PHPMYADMIN_MAX_MAJOR" ] || {
+    echo "  skipping phpmyadmin $v — major above the probed ceiling ($PHPMYADMIN_MAX_MAJOR)" >&2
+    continue
+  }
+  echo "  found phpmyadmin $v" >&2
+  PHPMYADMIN_VERSIONS+=("$v")
+done < <(gh api "repos/$PHPMYADMIN_REPO/releases" --paginate \
+  --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null || true)
+if [ ${#PHPMYADMIN_VERSIONS[@]} -gt 0 ]; then
+  # shellcheck disable=SC2207
+  PHPMYADMIN_VERSIONS=($(printf '%s\n' "${PHPMYADMIN_VERSIONS[@]}" | sort -Vu))
+fi
+
 if [ "$DISCOVER" -eq 1 ]; then
   # QUALIFIED: unqualified, an issue body reads "8.4.24 5.5.1" and a human
   # cannot tell which project 5.5.1 belongs to.
@@ -410,14 +466,18 @@ if [ "$DISCOVER" -eq 1 ]; then
   for V in ${ADMINER_VERSIONS[@]:+"${ADMINER_VERSIONS[@]}"}; do
     printf '%s\n' "$PUBLISHED_ADMINER" | grep -qx "$V" || NEW+=("adminer:$V")
   done
+  for V in ${PHPMYADMIN_VERSIONS[@]:+"${PHPMYADMIN_VERSIONS[@]}"}; do
+    printf '%s\n' "$PUBLISHED_PHPMYADMIN" | grep -qx "$V" || NEW+=("phpmyadmin:$V")
+  done
   echo "upstream above the pins — php: ${VERSIONS[*]:-none}" >&2
   echo "upstream above the pins — adminer: ${ADMINER_VERSIONS[*]:-none}" >&2
+  echo "upstream above the pins — phpmyadmin: ${PHPMYADMIN_VERSIONS[*]:-none}" >&2
   echo "already in the published manifest: $(printf '%s ' $PUBLISHED)" >&2
   [ ${#NEW[@]} -gt 0 ] && printf '%s\n' ${NEW[@]:+"${NEW[@]}"}
   exit 0
 fi
 
-if [ ${#VERSIONS[@]} -eq 0 ] && [ ${#ADMINER_VERSIONS[@]} -eq 0 ]; then
+if [ ${#VERSIONS[@]} -eq 0 ] && [ ${#ADMINER_VERSIONS[@]} -eq 0 ] && [ ${#PHPMYADMIN_VERSIONS[@]} -eq 0 ]; then
   echo
   echo "Nothing newer than the pins is published upstream. Nothing to do."
   echo "That is the NORMAL state: static-php.dev rebuilds after each upstream"
@@ -456,6 +516,13 @@ if [ -n "$PUBLISHED_ADMINER" ]; then
   done <<< "$PUBLISHED_ADMINER"
   # shellcheck disable=SC2207
   ADMINER_VERSIONS=($(printf '%s\n' "${ADMINER_VERSIONS[@]}" | sort -Vu))
+fi
+if [ -n "$PUBLISHED_PHPMYADMIN" ]; then
+  while IFS= read -r v; do
+    [ -n "$v" ] && PHPMYADMIN_VERSIONS+=("$v")
+  done <<< "$PUBLISHED_PHPMYADMIN"
+  # shellcheck disable=SC2207
+  PHPMYADMIN_VERSIONS=($(printf '%s\n' "${PHPMYADMIN_VERSIONS[@]}" | sort -Vu))
 fi
 
 # ── The macOS floor a Mach-O declares, read from its own load commands ────────
@@ -605,6 +672,47 @@ for V in ${ADMINER_VERSIONS[@]:+"${ADMINER_VERSIONS[@]}"}; do
   ENTRIES="${ENTRIES:+$ENTRIES,}$(printf '{"name":"adminer","version":"%s","arch":"any","url":"%s","sha256":"%s"}' \
     "$V" "$URL" "$SHA")"
   KEPT+=("adminer $V")
+done
+
+# ── phpMyAdmin: one zip per version, arch-free, cross-checked with the project ──
+#
+# The project publishes a `.sha256` beside every release file. Our digest is what
+# the app will enforce, so it is computed from the bytes we downloaded — and then
+# REQUIRED to equal the project's. A disagreement means the file server handed us
+# something the project did not sign off (a truncated transfer, a swapped asset),
+# and that is a version to DROP loudly, never to publish with the digest we saw.
+for V in ${PHPMYADMIN_VERSIONS[@]:+"${PHPMYADMIN_VERSIONS[@]}"}; do
+  case "$V" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "not an x.y.z phpmyadmin version: $V" >&2; exit 1 ;; esac
+  [ "${V%%.*}" -le "$PHPMYADMIN_MAX_MAJOR" ] || {
+    echo "phpmyadmin $V is above the probed ceiling ($PHPMYADMIN_MAX_MAJOR) — the app would drop it. Skipping." >&2
+    continue
+  }
+  # The english-only zip, which is what rexenv pins (10.8 MB; all-languages is 15 MB
+  # of translations the console never shows).
+  URL="$PHPMYADMIN_BASE/$V/phpMyAdmin-$V-english.zip"
+  OUT="$WORK/phpmyadmin-$V"
+  printf '  phpmyadmin %s … ' "$V"
+  if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
+    echo "MISSING"
+    echo "  → phpmyadmin $V has no $(basename "$URL") on files.phpmyadmin.net; dropped." >&2
+    continue
+  fi
+  SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
+  THEIRS="$(curl -fsSL --retry 3 "$URL.sha256" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+  if [ -z "$THEIRS" ]; then
+    echo "$SHA (no .sha256 published beside it)"
+    echo "  → phpmyadmin $V: the project publishes no .sha256 for this file; dropped rather than vouched for alone." >&2
+    continue
+  fi
+  if [ "$THEIRS" != "$SHA" ]; then
+    echo "DIGEST MISMATCH"
+    echo "  → phpmyadmin $V: our download hashes $SHA, the project's .sha256 says $THEIRS; dropped." >&2
+    continue
+  fi
+  echo "$SHA (matches the project's .sha256)"
+  ENTRIES="${ENTRIES:+$ENTRIES,}$(printf '{"name":"phpmyadmin","version":"%s","arch":"any","url":"%s","sha256":"%s"}' \
+    "$V" "$URL" "$SHA")"
+  KEPT+=("phpmyadmin $V")
 done
 
 [ ${#KEPT[@]} -gt 0 ] || { echo "no complete version to publish"; exit 0; }

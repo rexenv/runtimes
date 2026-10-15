@@ -3,7 +3,7 @@ name: Publish PHP update manifest
 # THE command. Run this when a new PHP patch is out and rexenv users should be
 # offered it: Actions → this workflow → Run workflow. Nothing else to do.
 #
-# It discovers what static-php.dev and Adminer have published since rexenv's
+# It discovers what static-php.dev, Adminer and phpMyAdmin have published since rexenv's
 # pins, downloads every artifact, hashes it, signs the document with the release
 # key, verifies its own signature, and COMMITS the two signed files to the
 # default branch. The app fetches them from there, checks the signature against a
