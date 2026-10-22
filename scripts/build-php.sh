@@ -339,6 +339,55 @@ if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
   echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
 fi
 
+# ─── PHP 8.4+: a stray `ext/imap/` in php.net's tarball ──────────────────────
+#
+# imap left php-src in 8.4 and comes from PECL; spc extracts it into
+# `php-src/ext/imap`. The 21 Oct 2026 security release (8.4.27, 8.5.12) put ONE
+# file back there — `ext/imap/tests/oom_imap_mime_header_decode.phpt`, a test of
+# the PECL extension carried by the OOM fix — so the directory exists, spc logs
+# "Source [ext-imap] already extracted … skip!", and the build dies reading an
+# `ext/imap/config.m4` that was never written:
+#   ✗ File system error: Reading file …/php-src/ext/imap/config.m4 failed
+# Measured on run 39850435442: all four 8.4.27/8.5.12 jobs, both arches.
+#
+# The fix is to hand spc the release tarball WITHOUT that stub. The tarball is
+# pinned (php.net's own sha256, checked against releases/index.php?json), the
+# stub is removed only when it holds no config.m4, and a pin row is REQUIRED for
+# any 8.4+/8.5+ version whose tarball has the stub — so the next patch either
+# ships without it (nothing happens) or stops here and says which line to add.
+PHP_SRC_SHA256=""
+case "$PHP_VERSION" in
+  8.4.27) PHP_SRC_SHA256="dcf93923b0e38e0d5252b25b796520b5a47761a08b3488b6d0b5d1115764d3f0" ;;
+  8.5.12) PHP_SRC_SHA256="08bc2eba2a588654ade1357174aa646b761556c862dda0678345ee29ed481209" ;;
+esac
+case "$PHP_VERSION" in
+  8.0.*|8.1.*|8.2.*|8.3.*) ;;
+  *)
+    say "php-src: check for a stray ext/imap (PHP $PHP_VERSION)"
+    curl -fSL -o php-src.tar.xz "https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz"
+    IMAP_ENTRIES="$(tar tJf php-src.tar.xz)"
+    IMAP_ENTRIES="$(printf '%s\n' "$IMAP_ENTRIES" | grep -E -- "^php-${PHP_VERSION}/ext/imap/" || true)"
+    if [ -z "$IMAP_ENTRIES" ]; then
+      echo "  no ext/imap in the tarball — spc's own download is used"
+      rm -f php-src.tar.xz
+    elif grep -q -- '/ext/imap/config.m4$' <<< "$IMAP_ENTRIES"; then
+      echo "::error::php-${PHP_VERSION} ships a real ext/imap — imap is bundled again, revisit this block"; exit 1
+    else
+      [ -n "$PHP_SRC_SHA256" ] || {
+        echo "::error::php-${PHP_VERSION} has a stray ext/imap stub; add its php.net sha256 (tar.xz) to PHP_SRC_SHA256 above"; exit 1; }
+      echo "$PHP_SRC_SHA256  php-src.tar.xz" | shasum -a 256 -c - \
+        || { echo "::error::php-src checksum mismatch — refusing to repack an unpinned source"; exit 1; }
+      printf '  removing stub:\n%s\n' "$IMAP_ENTRIES" | sed 's/^/    /'
+      rm -rf patched && mkdir patched && tar -C patched -xf php-src.tar.xz
+      rm -rf "patched/php-${PHP_VERSION}/ext/imap"
+      tar -C patched -czf php-src-patched.tar.gz "php-${PHP_VERSION}"
+      rm -rf patched php-src.tar.xz
+      CUSTOM_URL_ARGS+=(--custom-url="php-src:file://$(pwd)/php-src-patched.tar.gz")
+      echo "  repacked source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
+    fi
+    ;;
+esac
+
 # ─── PHP 8.1: the BACKPORTED source, for the same reason 7.4 has one ─────────
 #
 # 8.1 is EOL upstream and php.net will not publish an 8.1.35. The 21 Oct 2026
