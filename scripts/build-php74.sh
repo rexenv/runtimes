@@ -53,9 +53,15 @@ SPC_SHA256_linux_x86_64="523ba4279c54c7a377156c0dd3a36adf92ee64b01e9a7f5e9e2ec08
 # The branch is REBASED, not appended, so this commit stops being reachable at
 # the next security update — which is why the tarball is mirrored into the
 # release and pinned by hash. When the URL below 404s, the mirror is the copy.
-SRC_COMMIT="5a576d8eb53e44aff3af9259cfd29e599f604471"
+#
+# 9f3f6763497a (19 Oct 2026) is the branch head carrying the minimal backport of
+# the 21 Oct critical release — CVE-2026-109618 and CVE-2026-109619,
+# unauthenticated RCE through FPM ("Avoid state corruption via bailout"). The
+# previous pin, 5a576d8eb53e, is what php-7.4.33-1…7 were built from; it stays
+# mirrored in those releases. The fix is asserted below, not assumed from the hash.
+SRC_COMMIT="9f3f6763497aa556d3fc56df7e66f44b8de49815"
 SRC_URL="https://github.com/shivammathur/php-src-backports/archive/${SRC_COMMIT}.tar.gz"
-SRC_SHA256="d82887f2166e8526ea9b1cfd8c5ecf5649718f0b6e341380d333eba8066429a4"
+SRC_SHA256="cd3e5db449ebad253f678afd3421ffd108d6a3a6bd7ad1d05dc80988b96b015d"
 
 # The oldest macOS these binaries run on. This is **12.0, matching spc's own
 # macOS default and every PHP build rexenv already ships** — measured, not
@@ -232,11 +238,15 @@ echo "${SRC_SHA256}  php-src.tar.gz" | shasum -a 256 -c -
 # Fail loudly if the OpenSSL 3 guard is not in this source — the single check
 # that separates a buildable tree from php.net's tarball.
 tar xzf php-src.tar.gz "php-src-backports-${SRC_COMMIT}/ext/openssl/openssl.c" \
-  "php-src-backports-${SRC_COMMIT}/main/php_version.h"
+  "php-src-backports-${SRC_COMMIT}/main/php_version.h" \
+  "php-src-backports-${SRC_COMMIT}/Zend/zend_alloc.c"
 grep -q '#ifdef RSA_SSLV23_PADDING' "php-src-backports-${SRC_COMMIT}/ext/openssl/openssl.c" \
   || { echo "::error::source lacks the OpenSSL 3 guard — wrong tarball?"; exit 1; }
 grep -q "#define PHP_VERSION \"${PHP_VERSION}\"" "php-src-backports-${SRC_COMMIT}/main/php_version.h" \
   || { echo "::error::source is not PHP ${PHP_VERSION}"; exit 1; }
+# `zend_mm_safe_error_ex` is what the CVE-2026-109618/109619 backport adds.
+grep -q 'zend_mm_safe_error_ex' "php-src-backports-${SRC_COMMIT}/Zend/zend_alloc.c" \
+  || { echo "::error::source lacks the CVE-2026-109618/109619 fix"; exit 1; }
 rm -rf "php-src-backports-${SRC_COMMIT}"
 
 # ─── Patch the source ────────────────────────────────────────────────────────
