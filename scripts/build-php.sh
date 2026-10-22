@@ -339,6 +339,46 @@ if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
   echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
 fi
 
+# ─── PHP 8.1: the BACKPORTED source, for the same reason 7.4 has one ─────────
+#
+# 8.1 is EOL upstream and php.net will not publish an 8.1.35. The 21 Oct 2026
+# critical release (CVE-2026-109618, CVE-2026-109619 — unauthenticated RCE
+# through FPM) reached 8.1 only as a "minimal source backport", which lives on
+# shivammathur's PHP-8.1-security-backports branch — the same project build-php74.sh
+# builds from. It still calls itself 8.1.34, so the artifact keeps that name and a
+# NEW release tag carries the fixed bytes; rexenv reaches them by moving its pin.
+#
+# A git archive, so there is no pre-generated `configure`: spc runs buildconf on a
+# custom php-src, exactly as it does for 7.4. The branch is REBASED, not appended,
+# so this commit can stop being reachable — the tarball is mirrored into the
+# release below the same way 7.4's is, and pinned by hash.
+#
+# Two assertions, because the hash only says the bytes are the ones we chose, not
+# that they are the ones we NEED: the version string (so the artifact name tells
+# the truth) and the fix itself, `zend_mm_safe_error_ex`, which is what the
+# backport commit adds to Zend/zend_alloc.c.
+case "$PHP_VERSION" in
+  8.1.34)
+    BACKPORT_COMMIT="ae65ef4b9ede39ef9923643b741a89c23a2e1c7a"
+    BACKPORT_SHA256="a13bdcef3787515a9cd300aa3643d4240e2bfc701abbc782734a02b25e470169"
+    say "php-src: 8.1 security backports (${BACKPORT_COMMIT:0:12})"
+    curl -fSL -o php-src-backports.tar.gz \
+      "https://github.com/shivammathur/php-src-backports/archive/${BACKPORT_COMMIT}.tar.gz"
+    echo "$BACKPORT_SHA256  php-src-backports.tar.gz" | shasum -a 256 -c - \
+      || { echo "::error::php-src checksum mismatch — refusing to build an unpinned source"; exit 1; }
+    BP_DIR="php-src-backports-${BACKPORT_COMMIT}"
+    tar xzf php-src-backports.tar.gz "$BP_DIR/main/php_version.h" "$BP_DIR/Zend/zend_alloc.c"
+    grep -q "#define PHP_VERSION \"${PHP_VERSION}\"" "$BP_DIR/main/php_version.h" \
+      || { echo "::error::backported source is not PHP ${PHP_VERSION}"; exit 1; }
+    grep -q 'zend_mm_safe_error_ex' "$BP_DIR/Zend/zend_alloc.c" \
+      || { echo "::error::backported source lacks the CVE-2026-109618/109619 fix"; exit 1; }
+    rm -rf "$BP_DIR"
+    CUSTOM_URL_ARGS+=(--custom-url="php-src:file://$(pwd)/php-src-backports.tar.gz")
+    mkdir -p "$OUT"
+    cp php-src-backports.tar.gz "$OUT/php-src-backports-${BACKPORT_COMMIT:0:12}.tar.gz"
+    ;;
+esac
+
 say "download sources"
 ./spc download \
   --with-php="${PHP_VERSION}" \

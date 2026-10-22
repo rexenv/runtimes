@@ -124,6 +124,17 @@ RELEASE_TAG_FOR() {
     8.3.32) echo "php-8x-8" ;;
     8.4.23) echo "php-8x-8" ;;
     8.5.8)  echo "php-8x-8" ;;
+    # php-8x-9 (23 Oct 2026): the 21 Oct security release — CVE-2026-109618 and
+    # CVE-2026-109619, unauthenticated RCE through FPM. static-php.dev publishes
+    # none of these four, so the build's flags/functions gates had no upstream to
+    # compare against (a 404 WARNING); 8.3.36 was diffed by hand against our own
+    # php-8x-8 8.3.32 instead — functions, classes, modules and configure flags
+    # identical but for build paths. 8.1 has no php.net patch at all: it needs
+    # the backported source, like 7.4.
+    8.2.35) echo "php-8x-9" ;;
+    8.3.36) echo "php-8x-9" ;;
+    8.4.27) echo "php-8x-9" ;;
+    8.5.12) echo "php-8x-9" ;;
     *)      echo "" ;;
   esac
 }
