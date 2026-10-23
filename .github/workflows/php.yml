@@ -33,6 +33,11 @@ on:
         description: "Use spc's pre-built dependency archives. Off = build every dep from source (much slower; use to rule them out as a failure cause)."
         type: boolean
         default: true
+      os:
+        description: "Which OS to build. linux = fully static musl ELFs on ubuntu-24.04(-arm), published as php-8x-linux-<build_number> (added 23 Oct 2026: static-php.dev had no Linux build of the CVE-2026-109618/109619 patches)."
+        type: choice
+        options: [macos, linux]
+        default: macos
       x86_host:
         description: "Where the macOS x86_64 half builds. rosetta (default since 7 Oct 2026) = the arm64 macos-15 runner under `arch -x86_64`, proven against the Intel-built artifacts (PRs #16, #17); intel = macos-15-intel, kept as a fallback until GitHub retires it (Aug 2027)."
         type: choice
@@ -89,8 +94,8 @@ jobs:
         # jobs instead, which is how a matrix silently builds one arch of
         # everything and both arches of nothing.)
         include:
-          - { arch: aarch64, runner: macos-15 }
-          - { arch: x86_64,  runner: "${{ inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel' }}", rosetta: "${{ inputs.x86_host == 'rosetta' }}" }
+          - { arch: aarch64, runner: "${{ inputs.os == 'linux' && 'ubuntu-24.04-arm' || 'macos-15' }}" }
+          - { arch: x86_64,  runner: "${{ inputs.os == 'linux' && 'ubuntu-24.04' || (inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel') }}", rosetta: "${{ inputs.os == 'macos' && inputs.x86_host == 'rosetta' }}" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -141,7 +146,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: php-${{ matrix.version }}-${{ matrix.arch }}
+          name: php-${{ matrix.version }}-${{ inputs.os }}-${{ matrix.arch }}
           path: out/
           retention-days: 7
 
@@ -151,7 +156,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: debug-${{ matrix.version }}-${{ matrix.arch }}
+          name: debug-${{ matrix.version }}-${{ inputs.os }}-${{ matrix.arch }}
           path: out/debug/
           retention-days: 7
           if-no-files-found: warn
@@ -202,7 +207,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="php-8x-${{ inputs.build_number }}"
+          # Linux has its own tag series: a macOS release is never amended with a second
+          # OS, because amending a published release is what this repo exists to deny.
+          if [ "${{ inputs.os }}" = linux ]; then TAG="php-8x-linux-${{ inputs.build_number }}"; else TAG="php-8x-${{ inputs.build_number }}"; fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
             exit 1
@@ -243,12 +250,18 @@ jobs:
           for v in $(echo "$VERSIONS" | tr -d '[]"' | tr ',' ' '); do
             for kind in cli fpm; do
               for arch in aarch64 x86_64; do
-                f="out/php-$v-$kind-macos-$arch.tar.gz"
+                f="out/php-$v-$kind-${{ inputs.os }}-$arch.tar.gz"
                 [ -f "$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
               done
             done
           done
-          echo "every version × {cli,fpm} × {aarch64,x86_64} is present"
+          for v in $(echo "$VERSIONS" | tr -d '[]"' | tr ',' ' '); do
+            for arch in aarch64 x86_64; do
+              if [ "${{ inputs.os }}" = linux ]; then lic="out/licenses-php-$v-linux-$arch.tar.gz"; else lic="out/licenses-php-$v-$arch.tar.gz"; fi
+              [ -f "$lic" ] || { echo "::error::missing $lic — rexenv refuses an artifact of ours without its licences"; exit 1; }
+            done
+          done
+          echo "every version × {cli,fpm,licenses} × {aarch64,x86_64} is present (${{ inputs.os }})"
 
       # What actually proves origin. The .sha256 files are documentation; the
       # hash pinned in rexenv's source is the trust root; this is the receipt
@@ -263,5 +276,5 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG" out/* \
-            --title "PHP 8.x with pdo_pgsql (build ${{ inputs.build_number }})" \
+            --title "PHP 8.x with pdo_pgsql (${{ inputs.os }}, build ${{ inputs.build_number }})" \
             --notes-file RELEASE-NOTES-php-8x.md
