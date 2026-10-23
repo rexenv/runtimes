@@ -92,12 +92,19 @@ unset RELEASE EMBED PHP_VERSION PHP_EXTENSIONS PHP_EXTENSION_LIBS XCADDY_ARGS MI
 ( cd "$WORK" && FRANKENPHP_VERSION="$FRANKENPHP_VERSION" OUTPUT_DIR="$WORK/dist" bash ./build-static.sh )
 BIN="$WORK/dist/frankenphp-mac-x86_64"
 [ -x "$BIN" ] || { echo "::error::build-static.sh produced no $BIN"; exit 1; }
-# The symbol list the shim exists for: every entry a C identifier, never a fragment.
+# The symbol list the shim exists for. The link passing already proves ld found every
+# entry (a log fragment is an "Undefined symbols" error, run 39921883089); what this
+# rejects is stderr text that happens to name a real symbol — a line with whitespace.
+# Entries that are not plain C identifiers ($, ., blank) are legitimate and only
+# printed: run 39933030958 had 10 of them and linked fine.
 DYNSYM="$WORK/dist/buildroot/lib/libphp.a.dynsym"
 if [ -f "$DYNSYM" ]; then
-  BAD="$(grep -cvE '^_[A-Za-z_][A-Za-z0-9_]*$' "$DYNSYM" || true)"
-  [ "$BAD" = 0 ] || { echo "::error::$BAD malformed entries in $DYNSYM"; exit 1; }
-  echo "libphp exports $(grep -c . "$DYNSYM") symbols, all well-formed"
+  SYMS="$(cat "$DYNSYM")"
+  BAD="$(grep -E '[[:space:]]' <<<"$SYMS" || true)"
+  [ -z "$BAD" ] || { echo "::error::log text in $DYNSYM:"; echo "$BAD" | head -20; exit 1; }
+  ODD="$(grep -vE '^_[A-Za-z_][A-Za-z0-9_]*$' <<<"$SYMS" || true)"
+  [ -z "$ODD" ] || { echo "non-identifier entries (informational):"; echo "$ODD" | cat -vet | head -20; }
+  echo "libphp exports $(grep -c . <<<"$SYMS") symbols, none with whitespace"
 fi
 
 # ─── Gates ───────────────────────────────────────────────────────────────────
