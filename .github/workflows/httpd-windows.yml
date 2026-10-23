@@ -110,6 +110,9 @@ jobs:
             echo "Listen 127.0.0.1:8311"
             for m in $MODULES; do echo "LoadModule ${m#mod_}_module \"modules/$m.so\""; done
             echo "ServerName gate.rex"
+            # PidFile is how -k shutdown finds the CONSOLE instance's parent (it signals the
+            # named event ap<pid>_shutdown); without one it looks for the "Apache2.4" service.
+            echo "PidFile \"logs/gate.pid\""
             echo "ErrorLog \"logs/gate-error.log\""
             echo "TypesConfig \"conf/mime.types\""
             echo "DocumentRoot \"$ROOT/htdocs\""
@@ -125,6 +128,8 @@ jobs:
           for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8311/ && break; sleep 1; done
           curl -sS -D - -o /dev/null http://127.0.0.1:8311/ | tr -d '\r' | grep -i '^Server:' | tee server.out
           grep -q "Apache/$HTTPD_VERSION" server.out || { echo "::error::no Apache Server header on the gate port"; exit 1; }
+          # mpm_winnt runs a parent plus one child: both are httpd.exe (rexenv's stop policy reads this).
+          echo "httpd.exe processes: $(tasklist | tr -d '\r' | grep -c '^httpd.exe' || true); pid file: $(tr -d '\r' < al/Apache24/logs/gate.pid)"
           ./al/Apache24/bin/httpd.exe -k shutdown -f "$(cygpath -w "$PWD/gate.conf")" || true
           sleep 3
           if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8311/; then echo "::error::httpd still answers after -k shutdown"; exit 1; fi
