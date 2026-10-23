@@ -869,12 +869,21 @@ found=0
 for d in source/*/; do
   name="$(basename "$d")"
   # `doc/COPYING*` last: acl and attr (libacl, Linux) keep their texts only there.
-  for f in LICENSE LICENSE.txt LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
+  # `LICENSE.TXT` is freetype's spelling in the Linux pre-built source (as in build-php74.sh).
+  for f in LICENSE LICENSE.txt LICENSE.TXT LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
            COPYRIGHT Copyright copyright LICENSE-MIT NOTICE doc/COPYING.LGPL doc/COPYING; do
     if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.$(basename "$f")"; found=$((found + 1)); break; fi
   done
 done
 echo "collected $found dependency licence files from $(ls -d source/*/ 2>/dev/null | wc -l | tr -d ' ') sources"
+# SQLite ships NO licence file because it has none — the amalgamation is public domain
+# (https://sqlite.org/copyright.html). The Linux lanes fetch that bare amalgamation (the
+# macOS ones never did), so the note build-php74.sh writes is written here too, and the
+# reader of the licences tarball sees the answer rather than a gap.
+if [ -d source/sqlite ] && ! ls "$LIC/sqlite."* >/dev/null 2>&1; then
+  printf '%s\n' "SQLite is in the public domain: https://sqlite.org/copyright.html" \
+    "The amalgamation ships no licence file; this note stands in for one." > "$LIC/sqlite.PUBLIC-DOMAIN.txt"
+fi
 missing=""
 for d in source/*/; do
   name="$(basename "$d")"
