@@ -12,6 +12,10 @@
 # without this build an Intel Mac either keeps 1.12.4 (PHP 8.5.8, vulnerable) or
 # loses FrankenPHP. The owner chose this build (23 Oct 2026).
 #
+# Pinned to 1.13.3 (23 Oct 2026, same PHP 8.5.12): its fixes include `SIGILL` in the
+# musl Linux binaries on CPUs without SHA-NI (`hash('sha256')`), and rexenv pins
+# those, so the whole set moves together. Intel Mac still has no upstream asset.
+#
 # **It is upstream's own build, run here — not a re-derivation.** The tag is
 # checked out at a pinned commit and its `build-static.sh` + `craft.yml` run
 # unmodified; the only thing this script supplies is a PINNED spc. The gates then
@@ -26,8 +30,8 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 
 # ─── Pins ────────────────────────────────────────────────────────────────────
-FRANKENPHP_VERSION="1.13.2"
-FRANKENPHP_COMMIT="0ad8a403a5c2eb13aacab92fffa6abc397157d10"   # tag v1.13.2 (annotated tag 49a9d53a), php/frankenphp
+FRANKENPHP_VERSION="1.13.3"
+FRANKENPHP_COMMIT="ae3d5b949d0963111bd895ffdd730e63c120665c"   # tag v1.13.3 (annotated tag dff43029), php/frankenphp
 EXPECT_PHP="8.5.12"
 
 # static-php-cli v3. Upstream's script takes the NIGHTLY, which moves daily and has
@@ -35,12 +39,12 @@ EXPECT_PHP="8.5.12"
 # that builds a pinned artifact is itself pinned to bytes here, and the bytes are
 # mirrored into the release beside the artifact so the build is reproducible from
 # our URLs once the nightly has moved on. Hashed from a full download, 23 Oct 2026
-# (nightly of 22 Oct 16:53 UTC — upstream's 1.13.2 build used an earlier one).
+# (nightly of 22 Oct 16:53 UTC — upstream's 1.13.x builds used their own day's).
 SPC_URL="https://dl.static-php.dev/v3/spc-bin/nightly/spc-macos-x86_64"
 SPC_SHA256="e0c4daef9e7ff0edc9cc5adddff6ad8a4305a43d4f7bb16e6b1d25a3f5ae39ff"
 
 # The floor every macOS binary rexenv ships declares, and what upstream's arm64
-# 1.13.2 declares (`minos 12.0`, measured).
+# 1.13.x declares (`minos 12.0`, measured).
 export MACOSX_DEPLOYMENT_TARGET="12.0"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
@@ -79,10 +83,15 @@ cp "$WORK/dist/spc" "$OUT/spc-macos-x86_64"
 #   Undefined symbols for architecture x86_64: "ects_new", referenced from: <initial-undefines>
 # (run 39921883089, after PHP and every library had built). A wrapper first on
 # PATH hands spc nm's stdout only. Nothing else about the build changes.
-mkdir -p "$WORK/nm-shim"
-printf '#!/bin/sh\nexec /usr/bin/nm "$@" 2>/dev/null\n' > "$WORK/nm-shim/nm"
-chmod +x "$WORK/nm-shim/nm"
-export PATH="$WORK/nm-shim:$PATH"
+# OUTSIDE the checkout: an untracked file in it made Go stamp `vcs.modified=true`
+# into the binary (frankenphp-1.13.2-1), where upstream's says false.
+NM_SHIM="$(pwd)/fp-nm-shim"
+rm -rf "$NM_SHIM" && mkdir -p "$NM_SHIM"
+printf '#!/bin/sh\nexec /usr/bin/nm "$@" 2>/dev/null\n' > "$NM_SHIM/nm"
+chmod +x "$NM_SHIM/nm"
+export PATH="$NM_SHIM:$PATH"
+DIRTY="$(git -C "$WORK" status --porcelain)"
+[ -z "$DIRTY" ] || { echo "::error::the checkout is not clean before the build:"; echo "$DIRTY"; exit 1; }
 
 # ─── Build: upstream's script, unmodified ────────────────────────────────────
 # RELEASE stays unset: with it, build-static.sh uploads to upstream's release with
@@ -144,6 +153,13 @@ echo "php-server: served PHP ${EXPECT_PHP} with pdo_pgsql"
 "$BIN" php-cli -n -r '$e = get_loaded_extensions(); sort($e); echo implode("\n", $e), "\n";' > "$OUT/extensions-x86_64.txt"
 "$BIN" php-cli -n -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f), "\n";' > "$OUT/functions-x86_64.txt"
 "$BIN" build-info > "$OUT/build-info-x86_64.txt"
+# 5. Provenance stamped in the binary, as upstream's reads: the pinned commit, a clean
+#    tree, and the module labelled as the release it is.
+BI="$(cat "$OUT/build-info-x86_64.txt")"
+grep -qx "build	vcs.revision=${FRANKENPHP_COMMIT}" <<<"$BI" || { echo "::error::vcs.revision is not $FRANKENPHP_COMMIT"; exit 1; }
+grep -qx 'build	vcs.modified=false' <<<"$BI" || { echo "::error::built from a modified tree (vcs.modified)"; exit 1; }
+grep -qx "dep	github.com/dunglas/frankenphp	v${FRANKENPHP_VERSION}" <<<"$BI" \
+  || { echo "::error::module not labelled v${FRANKENPHP_VERSION}: $(grep 'dunglas/frankenphp	' <<<"$BI")"; exit 1; }
 echo "extensions: $(grep -c . "$OUT/extensions-x86_64.txt") · functions: $(grep -c . "$OUT/functions-x86_64.txt")"
 
 # ─── Licences ────────────────────────────────────────────────────────────────
