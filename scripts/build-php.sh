@@ -288,6 +288,12 @@ for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 # `--with-suggested-libs` and landed in the gd RUN test's link line. Named
 # explicitly here, it is a dba backend and nothing else.)
 LIBS="freetype,libjpeg,libwebp,libavif,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig,qdbm,liblz4,zstd"
+# Linux only: what the FLAG gate found on the first Linux run (39910955299, 8.3.32,
+# both arches) — upstream's Linux bulk sets `--enable-iouring --enable-uring-socket`
+# (swoole's io_uring, from liburing) and `--with-fpm-acl` (php-fpm's listen.acl_users /
+# acl_groups, from libacl). spc turns each on when the library is in the build. macOS
+# has neither, and upstream's macOS build sets neither.
+[ "$OS_NAME" = linux ] && LIBS="$LIBS,liburing,libacl"
 
 # Extensions the app cannot run without, asserted on the BUILT binary: spc will
 # happily drop one that failed to configure and still produce a working php.
@@ -862,9 +868,10 @@ cp "$PHP_LICENSE" "$LIC/" 2>/dev/null || true
 found=0
 for d in source/*/; do
   name="$(basename "$d")"
+  # `doc/COPYING*` last: acl and attr (libacl, Linux) keep their texts only there.
   for f in LICENSE LICENSE.txt LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
-           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE; do
-    if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.${f}"; found=$((found + 1)); break; fi
+           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE doc/COPYING.LGPL doc/COPYING; do
+    if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.$(basename "$f")"; found=$((found + 1)); break; fi
   done
 done
 echo "collected $found dependency licence files from $(ls -d source/*/ 2>/dev/null | wc -l | tr -d ' ') sources"
