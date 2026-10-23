@@ -120,8 +120,13 @@ jobs:
             unzip -q old.zip -d old
             ./new/php.exe -n -v | head -1 | grep -q "^PHP ${V} " || { echo "::error::$Z is not PHP $V"; exit 1; }
             # Same modules as php.net's build, with every bundled extension loaded.
-            mods() { "./$1/php.exe" -n -d extension_dir="$1/ext" $(cd "$1/ext" && ls php_*.dll | grep -v -e oci -e opcache | sed 's/^php_\(.*\)\.dll$/-d extension=\1/') -m 2>&1 | tr -d '\r'; }
+            # Startup noise is not a module: a warning names the tree's own path (old/
+            # vs new/), and snmp creates c:/usr/snmp on the FIRST run only. Both are
+            # compared out; the modules php prints are what is compared.
+            mods() { "./$1/php.exe" -n -d extension_dir="$1/ext" $(cd "$1/ext" && ls php_*.dll | grep -v -e oci -e opcache | sed 's/^php_\(.*\)\.dll$/-d extension=\1/') -m 2>&1 | tr -d '\r' | grep -v -e 'Warning' -e '^Created directory' || true; }
             diff <(mods old) <(mods new) || { echo "::error::$Z: php -m differs from php.net's"; exit 1; }
+            N="$(mods new | grep -c -x -e mbstring -e openssl -e pdo_mysql -e pdo_pgsql -e curl || true)"
+            [ "$N" = 5 ] || { echo "::error::$Z: the module list is not a real one (found $N of 5 expected modules)"; exit 1; }
             # The fix, as behaviour.
             T='register_shutdown_function(function(){ echo "SHUTDOWN-RAN\n"; }); str_repeat("x", 64 * 1024 * 1024);'
             run() { set +e; OUTPUT="$("./$1/php.exe" -n -d memory_limit=8M -r "$T" 2>&1)"; RC=$?; set -e; }
