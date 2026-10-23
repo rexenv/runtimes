@@ -22,11 +22,12 @@ permissions:
   attestations: write
 
 env:
-  FRANKENPHP_VERSION: "1.13.2"
+  FRANKENPHP_VERSION: "1.13.3"
   # Upstream's arm64 asset of the same release — what the x86_64 build is held to.
-  # GitHub's own asset digest, equal to a full download (23 Oct 2026).
-  UPSTREAM_ARM64_URL: "https://github.com/php/frankenphp/releases/download/v1.13.2/frankenphp-mac-arm64"
-  UPSTREAM_ARM64_SHA256: "3608f8d43eb6b0d3fb6b689d16cf4c0b449201b11ca563340ec0fcdf0e1f3483"
+  # GitHub's own asset digest, equal to a full download and attested by upstream's
+  # static.yaml at refs/tags/v1.13.3 (23 Oct 2026).
+  UPSTREAM_ARM64_URL: "https://github.com/php/frankenphp/releases/download/v1.13.3/frankenphp-mac-arm64"
+  UPSTREAM_ARM64_SHA256: "53f69626e8d7c656dfafdbbf65825b24d0e72ff55e71e520e06b988c8e3ced62"
 
 jobs:
   build:
@@ -164,4 +165,4 @@ jobs:
           set -euo pipefail
           gh release create "$TAG" out/* \
             --title "FrankenPHP ${FRANKENPHP_VERSION} for macOS x86_64 (build ${{ inputs.build_number }})" \
-            --notes "Upstream FrankenPHP v${FRANKENPHP_VERSION} (PHP 8.5.12, the CVE-2026-109618/109619 fix), built from its own build-static.sh at commit 0ad8a403 for the one target upstream stopped publishing (Intel Mac). Held to upstream's arm64 asset of the same release: same version and PHP, no extension, internal function or Go module missing. \`spc-macos-x86_64\` is the pinned static-php-cli v3 nightly it was built with. Licences: \`licenses-frankenphp-${FRANKENPHP_VERSION}-mac-x86_64.tar.gz\`."
+            --notes "Upstream FrankenPHP v${FRANKENPHP_VERSION} (PHP 8.5.12, the CVE-2026-109618/109619 fix), built from its own build-static.sh at commit ae3d5b94 for the one target upstream stopped publishing (Intel Mac). Held to upstream's arm64 asset of the same release: same version and PHP, no extension, internal function or Go module missing. \`spc-macos-x86_64\` is the pinned static-php-cli v3 nightly it was built with. Licences: \`licenses-frankenphp-${FRANKENPHP_VERSION}-mac-x86_64.tar.gz\`."
