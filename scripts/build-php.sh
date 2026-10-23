@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build PHP 8.x (cli + fpm) as a statically-dep-linked Mach-O via static-php-cli,
-# with the extension set static-php.dev's "bulk" builds carry **plus the one it
+# Build PHP 8.x (cli + fpm) as a statically-dep-linked Mach-O — or, on a Linux
+# runner, a fully static musl ELF — via static-php-cli, with the extension set static-php.dev's "bulk" builds carry **plus the one it
 # is missing: `pdo_pgsql`**.
 #
 # ─── Why this build exists at all ────────────────────────────────────────────
@@ -34,8 +34,20 @@
 # turned into an artifact, which is why the PostgreSQL gate below is a REAL
 # CONNECTION and not a module-list check: the module list is what lied.
 #
+# The Linux lanes (23 Oct 2026) exist for the same reason the macOS ones do, plus
+# one: static-php.dev's bulk Linux builds have the same `pdo_pgsql` hole, AND they
+# stopped at 8.5.8 / 8.4.23 / 8.3.32 / 8.2.32 — so when the 21 Oct critical release
+# (CVE-2026-109618/109619, unauthenticated RCE through FPM) landed, there was no
+# Linux build of any fixed patch to pin. The OS is read from `uname`, exactly as in
+# build-php74.sh, and the artifact name carries it.
+#
 # Usage: scripts/build-php.sh <version> <aarch64|x86_64> <outdir> [prebuilt]
 set -euo pipefail
+case "$(uname -s)" in
+  Darwin) OS_NAME=macos ;;
+  Linux)  OS_NAME=linux ;;
+  *) echo "::error::unsupported build host: $(uname -s)"; exit 1 ;;
+esac
 
 PHP_VERSION="${1:?php version required, e.g. 8.3.33}"
 ARCH="${2:?arch required: aarch64 or x86_64}"
@@ -54,14 +66,17 @@ esac
 # static-php-cli, pinned to bytes: the tool that builds a pinned artifact should
 # itself be pinned. Same version and digests as the 7.4 build — one tool, one pin.
 SPC_VERSION="2.8.5"
-SPC_SHA256_aarch64="acf2f25d56d0cbf8e65aa82e5054fef555f7be7c5c38046c6e0819f266d83225"
-SPC_SHA256_x86_64="e8b798048f62ca4960764196543b60ae703f7174aa418824cf542aeec1d2cd6a"
+SPC_SHA256_macos_aarch64="acf2f25d56d0cbf8e65aa82e5054fef555f7be7c5c38046c6e0819f266d83225"
+SPC_SHA256_macos_x86_64="e8b798048f62ca4960764196543b60ae703f7174aa418824cf542aeec1d2cd6a"
+SPC_SHA256_linux_aarch64="675a3840dcdc4ed041fe20eaa54310ce019a9984c1c03951df9ec66df5795213"
+SPC_SHA256_linux_x86_64="523ba4279c54c7a377156c0dd3a36adf92ee64b01e9a7f5e9e2ec084b8e458e5"
 
 # The oldest macOS these binaries run on. 12.0 is spc's own macOS default and the
 # floor every PHP rexenv already ships was built at — measured, not assumed, and
 # asserted per artifact below so a runner-image change is a build failure here
 # rather than a discovery on somebody's older Mac.
 export MACOSX_DEPLOYMENT_TARGET="12.0"
+[ "$OS_NAME" = macos ] || unset MACOSX_DEPLOYMENT_TARGET
 
 # PostgreSQL used by the connect gate. A real server, because the thing this
 # build exists to fix is invisible to every check that does not open a socket.
@@ -157,6 +172,10 @@ esac
 # expands `int compression ATTRIBUTE_UNUSED)` to `int compression )`, which is
 # what the parameter needed to be all along.
 OLD_MINOR_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=${MAC_ARCH}-apple-darwin -Os -Wno-strict-prototypes -std=gnu17 -Wno-incompatible-function-pointer-types"
+# Linux: build-php74.sh's measured line — no `--target` (the musl cross toolchain IS
+# the target), gcc's spelling of the pointer-type warning, and `-fPIC -fPIE` because
+# the small GOT overflows linking sapi/cli/php on aarch64 (run 35998030865).
+[ "$OS_NAME" = macos ] || OLD_MINOR_CFLAGS="-g -fstack-protector-strong -fPIC -fPIE -Os -std=gnu17 -Wno-incompatible-pointer-types"
 case "$PHP_VERSION" in
   8.1.*)
     export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="$OLD_MINOR_CFLAGS"
@@ -269,6 +288,12 @@ for e in $ALWAYS_EXTS; do EXTS="${EXTS:+$EXTS,}$e"; done
 # `--with-suggested-libs` and landed in the gd RUN test's link line. Named
 # explicitly here, it is a dba backend and nothing else.)
 LIBS="freetype,libjpeg,libwebp,libavif,libpng,zlib,bzip2,gmp,libxslt,libedit,imagemagick,libevent,postgresql,openssl,libzip,icu,onig,qdbm,liblz4,zstd"
+# Linux only: what the FLAG gate found on the first Linux run (39910955299, 8.3.32,
+# both arches) — upstream's Linux bulk sets `--enable-iouring --enable-uring-socket`
+# (swoole's io_uring, from liburing) and `--with-fpm-acl` (php-fpm's listen.acl_users /
+# acl_groups, from libacl). spc turns each on when the library is in the build. macOS
+# has neither, and upstream's macOS build sets neither.
+[ "$OS_NAME" = linux ] && LIBS="$LIBS,liburing,libacl"
 
 # Extensions the app cannot run without, asserted on the BUILT binary: spc will
 # happily drop one that failed to configure and still produce a working php.
@@ -282,9 +307,14 @@ REQUIRED_EXTS="phar mysqli pdo_mysql pdo_pgsql pgsql curl gd mbstring json xml d
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
 # ─── Toolchain ───────────────────────────────────────────────────────────────
-say "toolchain"
-clang --version | head -2
-echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+say "toolchain ($OS_NAME $ARCH)"
+if [ "$OS_NAME" = macos ]; then
+  clang --version | head -2
+  echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+else
+  gcc --version | head -1
+  head -2 /etc/os-release
+fi
 echo "pre-built deps: $PREBUILT"
 echo "parity reference: $(basename "$PARITY_REF")"
 echo "PHP EXTRA_CFLAGS=${SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS:-<spc default>}"
@@ -294,8 +324,8 @@ say "static-php-cli $SPC_VERSION"
 WORK="$(pwd)/spc-work"
 mkdir -p "$WORK" && cd "$WORK"
 curl -fSL -o spc.tar.gz \
-  "https://github.com/crazywhalecc/static-php-cli/releases/download/${SPC_VERSION}/spc-macos-${ARCH}.tar.gz"
-EXPECT="SPC_SHA256_${ARCH}"
+  "https://github.com/crazywhalecc/static-php-cli/releases/download/${SPC_VERSION}/spc-${OS_NAME}-${ARCH}.tar.gz"
+EXPECT="SPC_SHA256_${OS_NAME}_${ARCH}"
 echo "${!EXPECT}  spc.tar.gz" | shasum -a 256 -c - \
   || { echo "::error::spc checksum mismatch — refusing to build with an unpinned tool"; exit 1; }
 tar xzf spc.tar.gz && chmod +x spc
@@ -329,7 +359,7 @@ if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
   for f in "$SRC_DIR/configure" "$SRC_DIR/ext/intl/config.m4"; do
     n="$(grep -c -e '-std=c++11' -e 'COMPILE_STDCXX(11' "$f" || true)"
     HITS=$((HITS + n))
-    sed -i '' -e 's/-std=c++11/-std=c++17/g' -e 's/COMPILE_STDCXX(11/COMPILE_STDCXX(17/g' "$f"
+    sed -i.orig -e 's/-std=c++11/-std=c++17/g' -e 's/COMPILE_STDCXX(11/COMPILE_STDCXX(17/g' "$f" && rm -f "$f.orig"
   done
   [ "$HITS" -gt 0 ] || { echo "::error::found no C++11 request to raise in $PHP_VERSION — the patch would be a no-op"; exit 1; }
   echo "  raised $HITS C++11 requests to C++17"
@@ -549,7 +579,7 @@ fi
 #     publish this version (7.4 never was), which is a fact about them rather
 #     than about us — and the log says which of the two happened.
 say "function parity against upstream's build of the same version"
-UPSTREAM_URL="https://dl.static-php.dev/static-php-cli/bulk/php-${PHP_VERSION}-cli-macos-${ARCH}.tar.gz"
+UPSTREAM_URL="https://dl.static-php.dev/static-php-cli/bulk/php-${PHP_VERSION}-cli-${OS_NAME}-${ARCH}.tar.gz"
 FUNCS_MINE="$(mktemp)"
 "$BIN/php" -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f);' > "$FUNCS_MINE"
 # A 404 and a flaky network are NOT the same answer, and treating them the same
@@ -665,6 +695,7 @@ if [ "$UP_STATUS" = "200" ]; then
   rm -rf /tmp/upstream-php /tmp/upstream-php.tar.gz
 fi
 
+if [ "$OS_NAME" = macos ]; then
 # 4. The dylib closure is what rexenv's relink_to_system_libs accepts. Anything
 #    outside /usr/lib + /System makes rexenv hard-error at resolve() on the
 #    user's machine, long after this build.
@@ -682,6 +713,24 @@ for f in "$BIN/php" "$BIN/php-fpm"; do
   [ "$MINOS" = "$MACOSX_DEPLOYMENT_TARGET" ] \
     || { echo "::error::$f minos=$MINOS want $MACOSX_DEPLOYMENT_TARGET"; exit 1; }
 done
+else
+# 4+5 (Linux). FULLY static, as build-php74.sh asserts: rexenv's Linux port does no
+#    relinking (docs/PLAN-linux-port.md §4), so a binary needing ANY shared library —
+#    glibc included — fails the first time it is spawned on a distro without that
+#    soname. ELF arch spellings: file(1) says "x86-64" and "ARM aarch64".
+for f in "$BIN/php" "$BIN/php-fpm"; do
+  LDD="$(ldd "$f" 2>&1 || true)"
+  if grep -qvE 'not a dynamic executable|statically linked' <<<"$LDD"; then
+    echo "::error::$f is dynamically linked: $(head -3 <<<"$LDD")"; exit 1
+  fi
+  FILE="$(file "$f")"
+  grep -q 'statically linked' <<<"$FILE" || { echo "::error::$f is not statically linked: $FILE"; exit 1; }
+  case "$ARCH" in
+    x86_64)  grep -q 'x86-64'  <<<"$FILE" || { echo "::error::$f is not x86_64: $FILE"; exit 1; } ;;
+    aarch64) grep -q 'aarch64' <<<"$FILE" || { echo "::error::$f is not aarch64: $FILE"; exit 1; } ;;
+  esac
+done
+fi
 
 # 6. THE GATE THIS BUILD EXISTS FOR: a real PostgreSQL connection through PDO.
 #
@@ -705,6 +754,11 @@ fi
 if [ -n "${PG_BIN_DIR:-}" ]; then
   PG_BIN="$PG_BIN_DIR"
   echo "using the PostgreSQL at $PG_BIN (PG_BIN_DIR)"
+elif [ "$OS_NAME" = linux ]; then
+  # Ubuntu runners carry PostgreSQL's binaries (service off); install them if not.
+  ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1 \
+    || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql >/dev/null; }
+  PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)"
 else
   brew install "$PG_BREW_FORMULA" >/dev/null
   PG_BIN="$(brew --prefix "$PG_BREW_FORMULA")/bin"
@@ -763,9 +817,15 @@ rm -f /tmp/wp-cli.phar /tmp/composer.phar
 # and the `if` takes the else branch — so the check reports the OPPOSITE of what
 # it found. It said "NO _OnUpdateBool" about a binary that exports it. Anywhere a
 # `grep -q` reads a long stream here, it reads a variable instead.
-SYMTAB="$(nm -gU "$BIN/php-fpm")"
+# On Linux the DYNAMIC table is what dlopen resolves against (spc links
+# `--export-dynamic`), and ELF symbols carry no leading underscore.
+if [ "$OS_NAME" = macos ]; then
+  SYMTAB="$(nm -gU "$BIN/php-fpm")"
+else
+  SYMTAB="$(nm -D --defined-only "$BIN/php-fpm" 2>/dev/null || true)"
+fi
 SYMS="$(printf '%s\n' "$SYMTAB" | wc -l | tr -d ' ')"
-if grep -q _OnUpdateBool <<<"$SYMTAB"; then
+if grep -qE '(^| )_?OnUpdateBool$' <<<"$SYMTAB"; then
   echo "zend-symbols: $SYMS exported, _OnUpdateBool present → Xdebug can dlopen"
 else
   echo "::warning::zend-symbols: $SYMS exported, NO _OnUpdateBool → no Xdebug on this build"
@@ -808,12 +868,22 @@ cp "$PHP_LICENSE" "$LIC/" 2>/dev/null || true
 found=0
 for d in source/*/; do
   name="$(basename "$d")"
-  for f in LICENSE LICENSE.txt LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
-           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE; do
-    if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.${f}"; found=$((found + 1)); break; fi
+  # `doc/COPYING*` last: acl and attr (libacl, Linux) keep their texts only there.
+  # `LICENSE.TXT` is freetype's spelling in the Linux pre-built source (as in build-php74.sh).
+  for f in LICENSE LICENSE.txt LICENSE.TXT LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
+           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE doc/COPYING.LGPL doc/COPYING; do
+    if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.$(basename "$f")"; found=$((found + 1)); break; fi
   done
 done
 echo "collected $found dependency licence files from $(ls -d source/*/ 2>/dev/null | wc -l | tr -d ' ') sources"
+# SQLite ships NO licence file because it has none — the amalgamation is public domain
+# (https://sqlite.org/copyright.html). The Linux lanes fetch that bare amalgamation (the
+# macOS ones never did), so the note build-php74.sh writes is written here too, and the
+# reader of the licences tarball sees the answer rather than a gap.
+if [ -d source/sqlite ] && ! ls "$LIC/sqlite."* >/dev/null 2>&1; then
+  printf '%s\n' "SQLite is in the public domain: https://sqlite.org/copyright.html" \
+    "The amalgamation ships no licence file; this note stands in for one." > "$LIC/sqlite.PUBLIC-DOMAIN.txt"
+fi
 missing=""
 for d in source/*/; do
   name="$(basename "$d")"
@@ -831,10 +901,13 @@ fi
 # catalog changes a URL and a digest and nothing else.
 say "package"
 mkdir -p "$OUT"
-tar -C "$BIN" -czf "$OUT/php-${PHP_VERSION}-cli-macos-${ARCH}.tar.gz" php
-tar -C "$BIN" -czf "$OUT/php-${PHP_VERSION}-fpm-macos-${ARCH}.tar.gz" php-fpm
-tar -C "$OUT" -czf "$OUT/licenses-php-${PHP_VERSION}-${ARCH}.tar.gz" licenses && rm -rf "$LIC"
-( cd "$OUT" && shasum -a 256 ./php-${PHP_VERSION}-*-macos-${ARCH}.tar.gz | tee "SHA256SUMS-php-${PHP_VERSION}-${ARCH}" )
+tar -C "$BIN" -czf "$OUT/php-${PHP_VERSION}-cli-${OS_NAME}-${ARCH}.tar.gz" php
+tar -C "$BIN" -czf "$OUT/php-${PHP_VERSION}-fpm-${OS_NAME}-${ARCH}.tar.gz" php-fpm
+# The licence set is per OS AND arch (musl and the Linux pre-built deps are a
+# different closure). macOS keeps the name every published release already uses.
+if [ "$OS_NAME" = macos ]; then LIC_TAG="$ARCH"; else LIC_TAG="linux-$ARCH"; fi
+tar -C "$OUT" -czf "$OUT/licenses-php-${PHP_VERSION}-${LIC_TAG}.tar.gz" licenses && rm -rf "$LIC"
+( cd "$OUT" && shasum -a 256 ./php-${PHP_VERSION}-*-${OS_NAME}-${ARCH}.tar.gz | tee "SHA256SUMS-php-${PHP_VERSION}-${LIC_TAG}" )
 ls -lh "$OUT"
 
 say "record"
