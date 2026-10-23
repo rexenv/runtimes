@@ -1,5 +1,6 @@
 Static PHP **8.1 – 8.5** for macOS — `php` (cli) and `php-fpm`, arm64 and x86_64,
-**with a working `pdo_pgsql`**.
+**with a working `pdo_pgsql`**. Linux builds (fully static musl, x86_64 and aarch64)
+publish under their own tag series, `php-8x-linux-<n>` — see *Linux* below.
 
 **PHP 8.0 is NOT in this release, and that is a measurement rather than a
 decision to make later.** It builds and passes every gate on arm64; on x86_64 the
@@ -69,6 +70,18 @@ Verify origin:
 ```sh
 gh attestation verify php-8.3.33-cli-macos-aarch64.tar.gz --repo rexenv/runtimes
 ```
+
+## Linux
+
+`php-8x-linux-<n>` releases carry the same extension set and gates, built fully
+static against musl, so no glibc floor applies. Assets are named
+`php-<v>-{cli,fpm}-linux-<arch>.tar.gz`, `licenses-php-<v>-linux-<arch>.tar.gz` and
+`SHA256SUMS-php-<v>-linux-<arch>`. Two Linux-only libraries, `liburing` and `libacl`,
+follow upstream's own Linux configure flags (`--enable-iouring --enable-uring-socket
+--with-fpm-acl`). Compared against upstream's Linux bulk builds on both arches, the
+only thing missing is `SWOOLE_HOOK_PDO_PGSQL` / `SWOOLE_HOOK_PDO_SQLITE`, the
+documented trade in `DELIBERATE`. **No Linux build exports Zend's symbols, so a
+shared Xdebug cannot load into it.**
 
 ## Known gaps, stated rather than discovered
 
