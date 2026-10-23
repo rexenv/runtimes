@@ -345,16 +345,22 @@ if [ "$SERIAL" -le 1 ] && [ "$FIRST_RUN" -eq 0 ]; then
   exit 1
 fi
 
-exists() { curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 "$1" | grep -qE '^(200|302)$'; }
 
 # ── Discovery ─────────────────────────────────────────────────────────────────
 #
-# Probe upward from each minor's PIN until two consecutive misses. Two, not one:
-# upstream has skipped a patch number before, and stopping at the first 404 would
-# hide everything after it. Only the CLI artifact is probed here — all four are
-# fetched and hashed below, and a version missing any of them is dropped whole,
-# because rexenv requires both arches of both kinds or it will not resolve.
+# **Asked of php.net, not of static-php.dev.** Discovery used to probe upward from
+# each pin on `dl.static-php.dev` — the right question while the manifest carried
+# THEIR bytes, and the wrong one since it carries ours: static-php.dev stopped at
+# 8.5.8 / 8.4.23 / 8.3.32 / 8.2.32, so 8.5.9…8.5.11 and then the 21 Oct 2026 critical
+# release (CVE-2026-109618/109619) were invisible here, and the daily `--discover`
+# said "nothing new" through a security release. php.net's release index is the
+# authority on what exists. Its NEWEST patch per minor is what is asked for; one we have not built is NOT offered:
+# the hashing loop skips it and says "BUILD IT FIRST", which is the point of
+# discovering it.
 #
+# A failed or unreadable index is fatal, never "no new versions": an empty answer
+# from a broken fetch is exactly how a discovery goes quiet without anyone noticing.
+PHPNET_RELEASES="https://www.php.net/releases/index.php?json&max=100&version="
 # Naming versions on the command line ADDS to discovery; it does not replace it.
 # It used to replace it, and that is a truncation bug rather than a preference:
 # the manifest is a REPLACEMENT document, so `publish-manifest.sh 8.3.32` wrote a
@@ -373,19 +379,22 @@ fi
   echo "discovering patches newer than each pin…" >&2
   for entry in "${PINS[@]}"; do
     minor="${entry%%:*}"; pin="${entry##*:}"
-    [ "$minor" = "7.4" ] && continue   # ours; static-php.dev has never published it
-    start="${pin##*.}"
-    misses=0; p=$((start + 1))
-    while [ "$misses" -lt 2 ] && [ "$p" -lt $((start + 30)) ]; do
-      v="${minor}.${p}"
-      if exists "$BASE/php-${v}-cli-macos-aarch64.tar.gz"; then
-        echo "  found $v" >&2
-        VERSIONS+=("$v"); misses=0
-      else
-        misses=$((misses + 1))
-      fi
-      p=$((p + 1))
-    done
+    [ "$minor" = "7.4" ] && continue   # EOL; its fixes are same-version rebuilds, moved by a pin
+    INDEX="$(curl -fsSL --retry 3 --max-time 30 "${PHPNET_RELEASES}${minor}")" || {
+      echo "could not read php.net's release index for $minor — refusing to report \"nothing new\"" >&2
+      exit 1
+    }
+    LISTED="$(grep -oE "\"${minor//./\\.}\\.[0-9]+\":" <<<"$INDEX" | tr -d '":' | sort -Vu || true)"
+    [ -n "$LISTED" ] || { echo "php.net's release index lists no $minor release — unreadable, refusing" >&2; exit 1; }
+    # The NEWEST patch only. Every patch between the pin and it is superseded — the
+    # newest carries its fixes — so naming 8.2.33 and 8.2.34 as "build it first"
+    # would send someone to build releases nobody should install. What is already
+    # published is carried forward below regardless.
+    v="$(tail -1 <<<"$LISTED")"
+    if [ "${v##*.}" -gt "${pin##*.}" ]; then
+      echo "  found $v (php.net's newest $minor)" >&2
+      VERSIONS+=("$v")
+    fi
   done
 }
 # Dedupe, keep version order. `sort -V` so 8.3.9 precedes 8.3.10.
