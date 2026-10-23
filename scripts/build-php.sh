@@ -340,30 +340,47 @@ tar xzf spc.tar.gz && chmod +x spc
 # PHP 8.1 asks for 17 when ICU requires it; 8.0, EOL since Nov 2023, never got
 # that change, so the patch IS what 8.1 does, applied to 8.0.
 #
-# Substituted on the RELEASE TARBALL including its pre-generated `configure`,
-# rather than regenerating with autoconf: php.net ships `configure` already
-# built, so patching `config.m4` alone would change nothing — a quiet no-op
-# instead of a fix. The number of substitutions is asserted for the same reason:
-# a tarball that stops containing the string must fail the build rather than
-# build the old way and be discovered by whoever needs intl.
+# The source is the 8.0 SECURITY BACKPORT, not php.net's 8.0.30 tarball: the
+# 21 Oct 2026 critical release (CVE-2026-109618, CVE-2026-109619 — unauthenticated
+# RCE through FPM) reached 8.0 only as a minimal backport on shivammathur's
+# PHP-8.0-security-backports branch, exactly as 8.1's did (see the 8.1 block
+# below for why it is mirrored and pinned, and what the two assertions are for).
+# It still calls itself 8.0.30.
+#
+# A git archive, so there is no pre-generated `configure` — spc runs buildconf,
+# and `config.m4` is what decides. `configure` is patched too when present, so
+# a source that ships one cannot turn this into a quiet no-op. The number of
+# substitutions is asserted for the same reason: a source that stops containing
+# the string must fail the build rather than build the old way and be
+# discovered by whoever needs intl.
 if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
   say "patch: intl C++11 → C++17 (PHP $PHP_VERSION)"
-  SRC_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz"
-  SRC_SHA256="216ab305737a5d392107112d618a755dc5df42058226f1670e9db90e77d777d9"  # php-8.0.30.tar.xz, php.net
-  curl -fSL -o php-src.tar.xz "$SRC_URL"
-  echo "$SRC_SHA256  php-src.tar.xz" | shasum -a 256 -c - \
+  BACKPORT_COMMIT="190a0202b4601d3066088ba913c2f1bda921ad8c"
+  BACKPORT_SHA256="3b70dac41c775c41913ff3a13c77beeaee375b995f41940e62ace648119c4622"
+  say "php-src: 8.0 security backports (${BACKPORT_COMMIT:0:12})"
+  curl -fSL -o php-src-backports.tar.gz \
+    "https://github.com/shivammathur/php-src-backports/archive/${BACKPORT_COMMIT}.tar.gz"
+  echo "$BACKPORT_SHA256  php-src-backports.tar.gz" | shasum -a 256 -c - \
     || { echo "::error::php-src checksum mismatch — refusing to patch an unpinned source"; exit 1; }
-  rm -rf patched && mkdir patched && tar -C patched -xf php-src.tar.xz
-  SRC_DIR="patched/php-${PHP_VERSION}"
+  rm -rf patched && mkdir patched && tar -C patched -xzf php-src-backports.tar.gz
+  BP_NAME="php-src-backports-${BACKPORT_COMMIT}"
+  SRC_DIR="patched/$BP_NAME"
+  grep -q "#define PHP_VERSION \"${PHP_VERSION}\"" "$SRC_DIR/main/php_version.h" \
+    || { echo "::error::backported source is not PHP ${PHP_VERSION}"; exit 1; }
+  grep -q 'zend_mm_safe_error_ex' "$SRC_DIR/Zend/zend_alloc.c" \
+    || { echo "::error::backported source lacks the CVE-2026-109618/109619 fix"; exit 1; }
+  mkdir -p "$OUT"
+  cp php-src-backports.tar.gz "$OUT/php-src-backports-${BACKPORT_COMMIT:0:12}.tar.gz"
   HITS=0
   for f in "$SRC_DIR/configure" "$SRC_DIR/ext/intl/config.m4"; do
+    [ -f "$f" ] || continue
     n="$(grep -c -e '-std=c++11' -e 'COMPILE_STDCXX(11' "$f" || true)"
     HITS=$((HITS + n))
     sed -i.orig -e 's/-std=c++11/-std=c++17/g' -e 's/COMPILE_STDCXX(11/COMPILE_STDCXX(17/g' "$f" && rm -f "$f.orig"
   done
   [ "$HITS" -gt 0 ] || { echo "::error::found no C++11 request to raise in $PHP_VERSION — the patch would be a no-op"; exit 1; }
   echo "  raised $HITS C++11 requests to C++17"
-  tar -C patched -czf php-src-patched.tar.gz "php-${PHP_VERSION}"
+  tar -C patched -czf php-src-patched.tar.gz "$BP_NAME"
   rm -rf patched
   CUSTOM_URL_ARGS+=(--custom-url="php-src:file://$(pwd)/php-src-patched.tar.gz")
   echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
