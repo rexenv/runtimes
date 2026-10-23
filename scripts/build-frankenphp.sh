@@ -161,7 +161,8 @@ missing=""
 for d in "$SRC_ROOT"/*/; do
   name="$(basename "$d")"
   for f in LICENSE LICENSE.txt LICENSE.TXT LICENSE.md LICENCE LICENCE.txt COPYING COPYING.txt \
-           COPYRIGHT Copyright copyright LICENSE-MIT NOTICE doc/COPYING.LGPL doc/COPYING; do
+           COPYRIGHT Copyright copyright LICENSE-MIT LICENSE.MIT NOTICE doc/COPYING.LGPL doc/COPYING \
+           README/LICENSE.md; do
     if [ -f "$d$f" ]; then cp "$d$f" "$LIC/${name}.$(basename "$f")"; continue 2; fi
   done
   if [ "$name" = sqlite ]; then
