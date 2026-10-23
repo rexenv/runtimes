@@ -81,11 +81,15 @@ jobs:
           # The licence texts, from the ASF source of the SAME version.
           curl -fsSL -o work/src.tar.bz2 "$SRC_URL"
           echo "$SRC_SHA512  work/src.tar.bz2" | sha512sum -c -
-          mkdir -p work/lic
-          tar -xjf work/src.tar.bz2 -C work/lic --strip-components=1 "httpd-$HTTPD_VERSION/LICENSE" "httpd-$HTTPD_VERSION/NOTICE"
-          cp work/al/ReadMe.txt work/lic/ReadMe-ApacheLounge.txt
-          printf 'Apache httpd %s for Windows x64, built by Apache Lounge (%s) from the unmodified ASF source and mirrored by rexenv.\nLICENSE and NOTICE are the ASF'"'"'s, from %s.\n' "$HTTPD_VERSION" "$AL_URL/$AL_ZIP" "$SRC_URL" > work/lic/README.txt
-          tar -czf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" -C work/lic LICENSE NOTICE ReadMe-ApacheLounge.txt README.txt
+          # rexenv unpacks a licences tarball into the artifact's cache dir and expects ONE
+          # top-level `licenses/` directory (`core::binaries::stage_licenses`; build 1 of this
+          # mirror put the files at the root and the app refused the artifact: "its licence
+          # archive unpacked to nothing").
+          mkdir -p work/lic/licenses
+          tar -xjf work/src.tar.bz2 -C work/lic/licenses --strip-components=1 "httpd-$HTTPD_VERSION/LICENSE" "httpd-$HTTPD_VERSION/NOTICE"
+          cp work/al/ReadMe.txt work/lic/licenses/ReadMe-ApacheLounge.txt
+          printf 'Apache httpd %s for Windows x64, built by Apache Lounge (%s) from the unmodified ASF source and mirrored by rexenv.\nLICENSE and NOTICE are the ASF'"'"'s, from %s.\n' "$HTTPD_VERSION" "$AL_URL/$AL_ZIP" "$SRC_URL" > work/lic/licenses/README.txt
+          tar -czf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" -C work/lic licenses
           ls -lh out
       - uses: actions/upload-artifact@v7
         with: { name: httpd-windows, path: out }
@@ -142,7 +146,7 @@ jobs:
           [ "$(tasklist | tr -d '\r' | grep -c '^httpd.exe' || true)" = 0 ] || { echo "::error::an httpd.exe survived the shutdown event"; exit 1; }
           echo "httpd $HTTPD_VERSION: version ok, rexenv's module set loads, serves, parent+child end on ap<pid>_shutdown"
           tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | tr -d '\r' | sort | tr '\n' ' '; echo
-          tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | grep -qx LICENSE || { echo "::error::no LICENSE in the licences archive"; exit 1; }
+          tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | grep -qx licenses/LICENSE || { echo "::error::no licenses/LICENSE in the licences archive (rexenv expects the licenses/ top dir)"; exit 1; }
 
   publish:
     needs: [fetch, verify]
