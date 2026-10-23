@@ -1,0 +1,192 @@
+name: Mirror Windows PHP 7.4/8.0/8.1 (security backports)
+
+# Manual only, like every workflow here.
+#
+# Why this exists: the 21 Oct 2026 critical release (CVE-2026-109618,
+# CVE-2026-109619 — unauthenticated RCE through FPM/CGI) shipped from php.net for
+# 8.2-8.5 only. 7.4, 8.0 and 8.1 are end-of-life and got a minimal source
+# backport on shivammathur/php-src-backports instead — which this repo already
+# BUILDS for macOS and Linux. On Windows there is no static-php to build with;
+# the backported Windows builds are shivammathur's own, published on
+# shivammathur/php-builder-windows (the builds setup-php installs), rebuilt
+# 21 Oct 2026 from that source.
+#
+# Mirrored rather than pinned at the source because those assets are REPLACED IN
+# PLACE under the same name (all three were, on 21 Oct) — a pin there turns
+# into a checksum failure on the user's machine the next time they rebuild. A
+# release here is immutable, attested, and gated:
+#
+#   1. each zip is the bytes chosen (sha256 pinned below);
+#   2. its PHP DLL EXPORTS `zend_mm_safe_error_ex` — the ZEND_API function the
+#      backport adds; php.net's own 7.4.33/8.0.30/8.1.34 zips do not export it
+#      (measured 24 Oct 2026), so this tells the fixed build from the old one by
+#      the code, not by a file name that never changed;
+#   3. on a real Windows runner: `php -m` equals php.net's zip of the same
+#      version, and the fix BEHAVES — exhausting memory_limit now exits 1 from
+#      the allocator without running shutdown functions (the old path bailed out
+#      through them, exit 255);
+#   4. the file set equals php.net's except the DELIBERATE list below.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a re-mirror is the next number."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = run the gates only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  SRC: https://github.com/shivammathur/php-builder-windows/releases/download
+  PHPNET: https://downloads.php.net/~windows/releases/archives
+  # version  builder-tag  toolset  dll   sha256 (nts x64 zip, 21 Oct 2026)  sha256 (src zip)
+  SET: |
+    7.4.33 php7.4 vc15 php7 a6f4a5f868e13e1fff802fe337e72d4483f496fe40a10216e25e28c370ccab24
+    8.0.30 php8.0 vs16 php8 98f4aa8269171842df943258395c3b476d9ac80d2c422397a629bd81845130a6
+    8.1.34 php8.1 vs16 php8 0b57b72712e9bfe680499c1f0c3267ce4ac3ee5f571e7af569c1683dc12819e3
+  # Files php.net's zip has and these do not. Both are Oracle client bindings that
+  # need Oracle's Instant Client DLLs beside them to load at all; php.net's 8.2/8.3
+  # zips of 21 Oct 2026 dropped the same two, and rexenv's ini model never enables
+  # oci. A DECISION, so a third missing file still fails.
+  DELIBERATE: "ext/php_oci8_12c.dll ext/php_oci8_19.dll ext/php_pdo_oci.dll"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download, check, compare
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          while read -r V TAG TS DLL SUM; do
+            [ -n "$V" ] || continue
+            Z="php-${V}-nts-Win32-${TS}-x64.zip"
+            curl -fsSL -o "out/$Z" "$SRC/$TAG/$Z"
+            echo "$SUM  out/$Z" | sha256sum -c -
+            curl -fsSL -o "out/php-${V}-src.zip" "$SRC/$TAG/php-${V}-src.zip"
+            unzip -p "out/php-${V}-src.zip" main/php_version.h > work/ver.h
+            grep -q "#define PHP_VERSION \"${V}\"" work/ver.h \
+              || { echo "::error::php-${V}-src.zip is not PHP ${V}"; exit 1; }
+            unzip -p "out/php-${V}-src.zip" Zend/zend_alloc.c > work/alloc.c
+            grep -q 'zend_mm_safe_error_ex' work/alloc.c \
+              || { echo "::error::php-${V}-src.zip lacks the CVE-2026-109618/109619 fix"; exit 1; }
+
+            rm -rf work/new work/old && mkdir -p work/new work/old
+            unzip -q "out/$Z" -d work/new
+            curl -fsSL -o work/old.zip "$PHPNET/$Z"
+            unzip -q work/old.zip -d work/old
+            EXPORTS="$(strings -n 8 "work/new/${DLL}.dll")"
+            grep -qx 'zend_mm_safe_error_ex' <<< "$EXPORTS" \
+              || { echo "::error::${Z}: ${DLL}.dll does not export zend_mm_safe_error_ex — not the fixed build"; exit 1; }
+            OLD_EXPORTS="$(strings -n 8 "work/old/${DLL}.dll")"
+            if grep -qx 'zend_mm_safe_error_ex' <<< "$OLD_EXPORTS"; then
+              echo "::error::php.net's ${Z} exports it too — the gate no longer tells the two apart"; exit 1
+            fi
+
+            ( cd work/old && find . -type f | sed 's|^\./||' | sort ) > work/old.lst
+            ( cd work/new && find . -type f | sed 's|^\./||' | sort ) > work/new.lst
+            MISSING="$(comm -23 work/old.lst work/new.lst)"
+            for f in $DELIBERATE; do MISSING="$(grep -vxF -- "$f" <<< "$MISSING" || true)"; done
+            [ -z "$MISSING" ] || { echo "::error::${Z} lacks files php.net's has:"; echo "$MISSING"; exit 1; }
+            echo "php ${V}: sha ok, fix exported, file set = php.net's minus DELIBERATE; added: $(comm -13 work/old.lst work/new.lst | tr '\n' ' ')"
+          done <<< "$SET"
+          ls -lh out
+      - uses: actions/upload-artifact@v7
+        with: { name: php-windows, path: out }
+
+  verify:
+    needs: fetch
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: php-windows, path: out }
+      - name: Run them
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r V TAG TS DLL SUM; do
+            [ -n "$V" ] || continue
+            Z="php-${V}-nts-Win32-${TS}-x64.zip"
+            rm -rf new old && mkdir new old
+            unzip -q "out/$Z" -d new
+            curl -fsSL -o old.zip "$PHPNET/$Z"
+            unzip -q old.zip -d old
+            ./new/php.exe -n -v | head -1 | grep -q "^PHP ${V} " || { echo "::error::$Z is not PHP $V"; exit 1; }
+            # Same modules as php.net's build, with every bundled extension loaded.
+            mods() { "./$1/php.exe" -n -d extension_dir="$1/ext" $(cd "$1/ext" && ls php_*.dll | grep -v -e oci -e opcache | sed 's/^php_\(.*\)\.dll$/-d extension=\1/') -m 2>&1 | tr -d '\r'; }
+            diff <(mods old) <(mods new) || { echo "::error::$Z: php -m differs from php.net's"; exit 1; }
+            # The fix, as behaviour.
+            T='register_shutdown_function(function(){ echo "SHUTDOWN-RAN\n"; }); str_repeat("x", 64 * 1024 * 1024);'
+            run() { set +e; OUTPUT="$("./$1/php.exe" -n -d memory_limit=8M -r "$T" 2>&1)"; RC=$?; set -e; }
+            run new
+            if [ "$RC" != 1 ] || grep -q SHUTDOWN-RAN <<< "$OUTPUT"; then
+              echo "::error::$Z: memory exhaustion took the OLD path (rc=$RC): $OUTPUT"; exit 1
+            fi
+            run old
+            if [ "$RC" = 1 ] && ! grep -q SHUTDOWN-RAN <<< "$OUTPUT"; then
+              echo "::error::php.net's $Z behaves like the fix too — this check proves nothing"; exit 1
+            fi
+            echo "php ${V}: version ok, php -m = php.net's, memory exhaustion takes the fixed path"
+          done <<< "$SET"
+
+  publish:
+    needs: [fetch, verify]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { name: php-windows, path: out }
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false) echo "::error::immutable releases are OFF — a published pin could be silently replaced."; exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="php-windows-legacy-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A re-mirror is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assert the set is complete
+        run: |
+          set -euo pipefail
+          while read -r V TAG TS DLL SUM; do
+            [ -n "$V" ] || continue
+            for f in "php-${V}-nts-Win32-${TS}-x64.zip" "php-${V}-src.zip"; do
+              [ -f "out/$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
+            done
+          done <<< "$SET"
+          cd out && sha256sum *.zip > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: out/*.zip
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "PHP 7.4.33 / 8.0.30 / 8.1.34 for Windows x64, security backports (build ${{ inputs.build_number }})" \
+            --notes "Mirror of shivammathur/php-builder-windows' nts x64 builds of 21 Oct 2026, built from shivammathur/php-src-backports (the CVE-2026-109618/109619 fix for these end-of-life minors; php.net publishes no build). Gated in .github/workflows/php-windows.yml: pinned sha256; the PHP DLL exports \`zend_mm_safe_error_ex\`, which php.net's zips of the same versions do not; on Windows, \`php -m\` equals php.net's and memory exhaustion takes the fixed path. Same files as php.net's zips except the Oracle bindings (php_oci8_*.dll, php_pdo_oci.dll), which php.net's own 8.2/8.3 zips also dropped. Sources: \`php-<v>-src.zip\`."
