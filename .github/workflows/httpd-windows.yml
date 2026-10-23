@@ -130,10 +130,17 @@ jobs:
           grep -q "Apache/$HTTPD_VERSION" server.out || { echo "::error::no Apache Server header on the gate port"; exit 1; }
           # mpm_winnt runs a parent plus one child: both are httpd.exe (rexenv's stop policy reads this).
           echo "httpd.exe processes: $(tasklist | tr -d '\r' | grep -c '^httpd.exe' || true); pid file: $(tr -d '\r' < al/Apache24/logs/gate.pid)"
-          ./al/Apache24/bin/httpd.exe -k shutdown -f "$(cygpath -w "$PWD/gate.conf")" || true
-          sleep 3
-          if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8311/; then echo "::error::httpd still answers after -k shutdown"; exit 1; fi
-          echo "httpd $HTTPD_VERSION: version ok, rexenv's module set loads, serves, shuts down on its own signal"
+          # The clean-shutdown channel rexenv uses (stop_policy, like MySQL's and nginx's named
+          # events): the parent publishes the event ap<pid>_shutdown; setting it ends parent AND
+          # child. (`-k shutdown` from a second httpd.exe looks for the Apache2.4 SERVICE here —
+          # measured in this gate — so rexenv signals the event itself.)
+          PARENT="$(tr -d '\r' < al/Apache24/logs/gate.pid)"
+          powershell -NoProfile -Command "[System.Threading.EventWaitHandle]::OpenExisting('ap${PARENT}_shutdown').Set() | Out-Null; 'event set'"
+          for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS -o /dev/null --max-time 1 http://127.0.0.1:8311/ 2>/dev/null || break; sleep 1; done
+          echo "after the event: httpd.exe processes: $(tasklist | tr -d '\r' | grep -c '^httpd.exe' || true)"
+          if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8311/; then echo "::error::httpd still answers after ap<pid>_shutdown was set"; exit 1; fi
+          [ "$(tasklist | tr -d '\r' | grep -c '^httpd.exe' || true)" = 0 ] || { echo "::error::an httpd.exe survived the shutdown event"; exit 1; }
+          echo "httpd $HTTPD_VERSION: version ok, rexenv's module set loads, serves, parent+child end on ap<pid>_shutdown"
           tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | tr -d '\r' | sort | tr '\n' ' '; echo
           tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | grep -qx LICENSE || { echo "::error::no LICENSE in the licences archive"; exit 1; }
 
