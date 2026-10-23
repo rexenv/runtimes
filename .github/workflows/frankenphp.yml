@@ -1,0 +1,167 @@
+name: Build FrankenPHP (macOS x86_64)
+
+# Manual only, like every build here. FrankenPHP 1.13.2 — the release carrying PHP
+# 8.5.12, the CVE-2026-109618/109619 fix — dropped the Intel Mac asset when it moved
+# to static-php-cli v3, so this repo builds that one target from upstream's own
+# build-static.sh at a pinned commit. See the header of scripts/build-frankenphp.sh.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  FRANKENPHP_VERSION: "1.13.2"
+  # Upstream's arm64 asset of the same release — what the x86_64 build is held to.
+  # GitHub's own asset digest, equal to a full download (23 Oct 2026).
+  UPSTREAM_ARM64_URL: "https://github.com/php/frankenphp/releases/download/v1.13.2/frankenphp-mac-arm64"
+  UPSTREAM_ARM64_SHA256: "3608f8d43eb6b0d3fb6b689d16cf4c0b449201b11ca563340ec0fcdf0e1f3483"
+
+jobs:
+  build:
+    # A native Intel runner: spc builds for the host, and Homebrew (which spc's doctor
+    # reaches for) refuses to install from inside Rosetta.
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: "1.27.x", cache: false }
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/build-frankenphp.sh "$GITHUB_WORKSPACE/out"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frankenphp-mac-x86_64
+          path: out/
+          retention-days: 7
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-frankenphp
+          path: |
+            fp-work/dist/log/
+            fp-work/dist/craft.yml
+          retention-days: 7
+          if-no-files-found: warn
+
+  # PARITY with upstream's arm64 asset of the same release: same FrankenPHP, same PHP,
+  # no extension, internal function or Go module of theirs missing here. On an arm64
+  # runner, where their binary runs natively and ours under Rosetta.
+  verify:
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-mac-x86_64, path: ours }
+      - name: Rosetta 2
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+      - name: Compare against upstream's arm64
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 -o theirs "$UPSTREAM_ARM64_URL"
+          echo "$UPSTREAM_ARM64_SHA256  theirs" | shasum -a 256 -c -
+          chmod +x theirs ours/frankenphp-mac-x86_64
+          V_THEIRS="$(./theirs version | awk '{print $1, $2, $3, $4}')"
+          V_OURS="$(arch -x86_64 ./ours/frankenphp-mac-x86_64 version | awk '{print $1, $2, $3, $4}')"
+          echo "theirs: $V_THEIRS"; echo "ours:   $V_OURS"
+          [ "$V_THEIRS" = "$V_OURS" ] || { echo "::error::version/PHP differ"; exit 1; }
+          ./theirs php-cli -n -r '$e = get_loaded_extensions(); sort($e); echo implode("\n", $e), "\n";' > ext-theirs
+          ./theirs php-cli -n -r '$f = get_defined_functions()["internal"]; sort($f); echo implode("\n", $f), "\n";' > fn-theirs
+          fail=0
+          for k in ext:extensions fn:functions; do
+            short="${k%%:*}"; long="${k#*:}"
+            MISSING="$(comm -23 "$short-theirs" "ours/$long-x86_64.txt" | tr '\n' ' ')"
+            echo "$long: theirs $(grep -c . "$short-theirs") · ours $(grep -c . "ours/$long-x86_64.txt")"
+            echo "  ours adds: $(comm -13 "$short-theirs" "ours/$long-x86_64.txt" | tr '\n' ' ')"
+            [ -z "$MISSING" ] || { echo "::error::missing $long upstream's arm64 has: $MISSING"; fail=1; }
+          done
+          ./theirs build-info | awk -F'\t' '$1=="dep"{print $2}' | sort -u > mods-theirs
+          awk -F'\t' '$1=="dep"{print $2}' ours/build-info-x86_64.txt | sort -u > mods-ours
+          GONE="$(comm -23 mods-theirs mods-ours | tr '\n' ' ')"
+          [ -z "$GONE" ] || { echo "::error::Go modules upstream links and this build does not: $GONE"; fail=1; }
+          echo "Go modules: theirs $(grep -c . mods-theirs) · ours $(grep -c . mods-ours)"
+          echo "version differences (informational):"
+          diff <(./theirs build-info | awk -F'\t' '$1=="dep"{print $2, $3}' | sort) \
+               <(awk -F'\t' '$1=="dep"{print $2, $3}' ours/build-info-x86_64.txt | sort) || true
+          exit $fail
+
+  publish:
+    needs: [build, verify]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-mac-x86_64, path: out }
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false) echo "::error::immutable releases are OFF — a published pin could be silently replaced."; exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="frankenphp-${FRANKENPHP_VERSION}-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assert no release asset can be replaced in place
+        run: |
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            exit 1
+          fi
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/spc-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/spc-clobber-probe || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/spc-clobber-probe
+      - name: Assert the set is complete
+        run: |
+          set -euo pipefail
+          for f in frankenphp-mac-x86_64 "licenses-frankenphp-${FRANKENPHP_VERSION}-mac-x86_64.tar.gz" spc-macos-x86_64; do
+            [ -f "out/$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
+          done
+          rm -f out/extensions-x86_64.txt out/functions-x86_64.txt
+          cd out && for f in frankenphp-mac-x86_64 licenses-frankenphp-*.tar.gz spc-macos-x86_64; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/frankenphp-mac-x86_64
+            out/licenses-frankenphp-*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "FrankenPHP ${FRANKENPHP_VERSION} for macOS x86_64 (build ${{ inputs.build_number }})" \
+            --notes "Upstream FrankenPHP v${FRANKENPHP_VERSION} (PHP 8.5.12, the CVE-2026-109618/109619 fix), built from its own build-static.sh at commit 0ad8a403 for the one target upstream stopped publishing (Intel Mac). Held to upstream's arm64 asset of the same release: same version and PHP, no extension, internal function or Go module missing. \`spc-macos-x86_64\` is the pinned static-php-cli v3 nightly it was built with. Licences: \`licenses-frankenphp-${FRANKENPHP_VERSION}-mac-x86_64.tar.gz\`."
