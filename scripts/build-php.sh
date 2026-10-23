@@ -485,6 +485,44 @@ say "download sources"
   --retry=5 \
   --debug
 
+# ─── PHP 8.0: extract php-src ourselves, so spc's libxml2 patch is not forced ─
+#
+# spc patches every php-src < 8.1 on extraction with spc_fix_libxml2_12_php80.patch
+# (SourcePatcher::patchPhpLibxml212). The security-backports source ALREADY
+# carries that fix — its libxml.c/soap/dom hunks are there verbatim — except one
+# whitespace hunk whose context a later backport rewrote. So spc's "already
+# applied?" probe (`patch -R --dry-run`) fails, the forward apply fails, and the
+# build dies: `Cannot extract source php-src: Patch file
+# [spc_fix_libxml2_12_php80.patch] failed to apply` (run 40004664364, both Linux
+# arches, and locally on macOS x86_64).
+#
+# spc skips extraction — and with it every php-src hook — when source/php-src
+# exists with a .spc-hash equal to the lock's hash (SourceManager, 2.8.5). So we
+# extract it, write that hash, and do by hand the two hooks that still apply off
+# Windows: spc_fix_alpine_build_php80.patch, and patchImapLicense (an Apache
+# LICENSE for 8.0's bundled ext/imap). Both files are spc's own at the pinned
+# tag, pinned again by hash here. The lock's hash is asserted to be the sha1 of
+# the tarball we built, so this can only ever skip OUR source.
+if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
+  say "php-src: pre-extract (spc's libxml2 2.12 patch is already in the backport)"
+  LOCK_HASH="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["php-src"]["hash"])' downloads/.lock.json)"
+  [ "$LOCK_HASH" = "$(shasum -a 1 downloads/php-src-patched.tar.gz | cut -d' ' -f1)" ] \
+    || { echo "::error::spc's php-src lock is not our patched tarball — refusing to pre-extract"; exit 1; }
+  SPC_RAW="https://raw.githubusercontent.com/crazywhalecc/static-php-cli/${SPC_VERSION}/src/globals"
+  curl -fsSL -o alpine80.patch "$SPC_RAW/patch/spc_fix_alpine_build_php80.patch"
+  echo "d49fb1ae8558e5fc6d03e21c220240ff79277071b2f9ae385b2e629a488073e4  alpine80.patch" | shasum -a 256 -c - \
+    || { echo "::error::spc_fix_alpine_build_php80.patch checksum mismatch"; exit 1; }
+  curl -fsSL -o Apache_LICENSE "$SPC_RAW/extra/Apache_LICENSE"
+  echo "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  Apache_LICENSE" | shasum -a 256 -c - \
+    || { echo "::error::Apache_LICENSE checksum mismatch"; exit 1; }
+  rm -rf source/php-src && mkdir -p source/php-src
+  tar -C source/php-src --strip-components=1 -xzf downloads/php-src-patched.tar.gz
+  ( cd source/php-src && patch -p1 --forward < ../../alpine80.patch )
+  [ -f source/php-src/ext/imap/LICENSE ] || cp Apache_LICENSE source/php-src/ext/imap/LICENSE
+  printf '%s' "$LOCK_HASH" > source/php-src/.spc-hash
+  rm -f alpine80.patch Apache_LICENSE
+fi
+
 say "doctor"
 ./spc doctor --auto-fix || true
 
