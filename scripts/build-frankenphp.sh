@@ -69,6 +69,21 @@ echo "$SPC_SHA256  $WORK/dist/spc" | shasum -a 256 -c - \
 chmod +x "$WORK/dist/spc"
 cp "$WORK/dist/spc" "$OUT/spc-macos-x86_64"
 
+# ─── nm, without its stderr ──────────────────────────────────────────────────
+# spc v3 builds the list of symbols libphp exports by running
+# `nm -g --defined-only -P libphp.a` and parsing what comes back — but its shell
+# helper (StaticPHP\Runtime\Shell\Shell::passthru) captures stdout AND stderr into
+# ONE buffer, 8 KiB chunk by chunk. nm's warnings landed in the middle of symbol
+# lines, so the exported-symbols list held fragments ("T", "_", "ects_new",
+# "nd_get_parameter_attribute_str") and the final link died:
+#   Undefined symbols for architecture x86_64: "ects_new", referenced from: <initial-undefines>
+# (run 39921883089, after PHP and every library had built). A wrapper first on
+# PATH hands spc nm's stdout only. Nothing else about the build changes.
+mkdir -p "$WORK/nm-shim"
+printf '#!/bin/sh\nexec /usr/bin/nm "$@" 2>/dev/null\n' > "$WORK/nm-shim/nm"
+chmod +x "$WORK/nm-shim/nm"
+export PATH="$WORK/nm-shim:$PATH"
+
 # ─── Build: upstream's script, unmodified ────────────────────────────────────
 # RELEASE stays unset: with it, build-static.sh uploads to upstream's release with
 # --clobber — never something this repo does to anyone's release, its own included.
@@ -77,6 +92,13 @@ unset RELEASE EMBED PHP_VERSION PHP_EXTENSIONS PHP_EXTENSION_LIBS XCADDY_ARGS MI
 ( cd "$WORK" && FRANKENPHP_VERSION="$FRANKENPHP_VERSION" OUTPUT_DIR="$WORK/dist" bash ./build-static.sh )
 BIN="$WORK/dist/frankenphp-mac-x86_64"
 [ -x "$BIN" ] || { echo "::error::build-static.sh produced no $BIN"; exit 1; }
+# The symbol list the shim exists for: every entry a C identifier, never a fragment.
+DYNSYM="$WORK/dist/buildroot/lib/libphp.a.dynsym"
+if [ -f "$DYNSYM" ]; then
+  BAD="$(grep -cvE '^_[A-Za-z_][A-Za-z0-9_]*$' "$DYNSYM" || true)"
+  [ "$BAD" = 0 ] || { echo "::error::$BAD malformed entries in $DYNSYM"; exit 1; }
+  echo "libphp exports $(grep -c . "$DYNSYM") symbols, all well-formed"
+fi
 
 # ─── Gates ───────────────────────────────────────────────────────────────────
 say "gates"
