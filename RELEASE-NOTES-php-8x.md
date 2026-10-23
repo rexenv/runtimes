@@ -2,16 +2,13 @@ Static PHP **8.1 – 8.5** for macOS — `php` (cli) and `php-fpm`, arm64 and x8
 **with a working `pdo_pgsql`**. Linux builds (fully static musl, x86_64 and aarch64)
 publish under their own tag series, `php-8x-linux-<n>` — see *Linux* below.
 
-**PHP 8.0 is NOT in this release, and that is a measurement rather than a
-decision to make later.** It builds and passes every gate on arm64; on x86_64 the
-binary links and then aborts in static-php-cli's own sanity check —
-`php -n -r 'echo "hello";'` exits 6 with no output — reproducibly, four runs,
-with swoole+protobuf, with intl, and with imagick+imap+event each excluded in
-turn (runs 34375990759, 34384428498, 34388106503, 34391268989, 34391282101). The
-cause is still unknown; 8.0 has been end-of-life since Nov 2023, and half an
-architecture is not something to ship. So 8.0 keeps coming from static-php.dev's
-bulk build — which means **a PostgreSQL-backed site needs PHP 8.1 or newer**, the
-consuming app enforcing that per minor rather than globally.
+**PHP 8.0.30 is built here from `php-8x-11` on** (24 Oct 2026), from the
+security-backports source that carries the CVE-2026-109618/109619 fix (see *Known
+gaps*). Earlier releases left 8.0 out: on the `macos-15-intel` runner the x86_64
+binary linked and then aborted in static-php-cli's own sanity check (`php -n -r
+'echo "hello";'` exited 6, runs 34375990759 … 34391282101, cause never found). The
+same build on the arm64 runner under Rosetta 2, the x86_64 host every build here
+has used since 7 Oct 2026, passes every gate (run 40006440766).
 
 Built by `.github/workflows/php.yml` via static-php-cli 2.8.5, from php.net sources
 spc downloads and pins. Extension parity with the static-php.dev "bulk" builds these
@@ -87,13 +84,19 @@ shared Xdebug cannot load into it.**
 
 - **OpenSSL 3's legacy provider is off**, so `openssl_encrypt` with `bf-cbc`, `rc4` or
   `des-*` fails. True of the static builds these replace as well — not a regression.
+- **PHP 8.0 and 8.1 are built from shivammathur/php-src-backports**, not php.net:
+  both are end-of-life, and the 21 Oct 2026 fix reached them only as a source
+  backport. They still call themselves 8.0.30 / 8.1.34; the tarball is pinned by
+  hash, mirrored into the release as `php-src-backports-<commit>.tar.gz`, and the
+  build asserts it carries `zend_mm_safe_error_ex`. 8.0's backport also carries
+  spc's own libxml2 2.12 patch already, so the build extracts php-src itself
+  rather than let spc fail re-applying it.
 - **PHP 8.0 is built from a patched source.** Its `ext/intl` asks for C++11
   (`PHP_CXX_COMPILE_STDCXX(11, mandatory, …)`) and the ICU this links (78) needs
   C++17 in its own headers, so the build raises that request to 17 — which is
   exactly what PHP 8.1 does when ICU requires it, applied to a version that never
-  got the change. The substitution runs on php.net's release tarball INCLUDING its
-  pre-generated `configure` (patching `config.m4` alone would be a no-op), the
-  tarball is pinned by SHA-256, and the number of substitutions is asserted.
+  got the change. The source is a git archive (no pre-generated `configure`), so
+  `config.m4` decides; the number of substitutions is asserted.
 - **PHP 8.0 carries protobuf 3.25.3**, not the 5.34.1 the newer minors get: the
   newer sources use Zend API 8.0 does not have. Upstream's bulk 8.0 ships an older
   protobuf too, so this is parity.

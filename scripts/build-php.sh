@@ -340,30 +340,47 @@ tar xzf spc.tar.gz && chmod +x spc
 # PHP 8.1 asks for 17 when ICU requires it; 8.0, EOL since Nov 2023, never got
 # that change, so the patch IS what 8.1 does, applied to 8.0.
 #
-# Substituted on the RELEASE TARBALL including its pre-generated `configure`,
-# rather than regenerating with autoconf: php.net ships `configure` already
-# built, so patching `config.m4` alone would change nothing — a quiet no-op
-# instead of a fix. The number of substitutions is asserted for the same reason:
-# a tarball that stops containing the string must fail the build rather than
-# build the old way and be discovered by whoever needs intl.
+# The source is the 8.0 SECURITY BACKPORT, not php.net's 8.0.30 tarball: the
+# 21 Oct 2026 critical release (CVE-2026-109618, CVE-2026-109619 — unauthenticated
+# RCE through FPM) reached 8.0 only as a minimal backport on shivammathur's
+# PHP-8.0-security-backports branch, exactly as 8.1's did (see the 8.1 block
+# below for why it is mirrored and pinned, and what the two assertions are for).
+# It still calls itself 8.0.30.
+#
+# A git archive, so there is no pre-generated `configure` — spc runs buildconf,
+# and `config.m4` is what decides. `configure` is patched too when present, so
+# a source that ships one cannot turn this into a quiet no-op. The number of
+# substitutions is asserted for the same reason: a source that stops containing
+# the string must fail the build rather than build the old way and be
+# discovered by whoever needs intl.
 if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
   say "patch: intl C++11 → C++17 (PHP $PHP_VERSION)"
-  SRC_URL="https://www.php.net/distributions/php-${PHP_VERSION}.tar.xz"
-  SRC_SHA256="216ab305737a5d392107112d618a755dc5df42058226f1670e9db90e77d777d9"  # php-8.0.30.tar.xz, php.net
-  curl -fSL -o php-src.tar.xz "$SRC_URL"
-  echo "$SRC_SHA256  php-src.tar.xz" | shasum -a 256 -c - \
+  BACKPORT_COMMIT="190a0202b4601d3066088ba913c2f1bda921ad8c"
+  BACKPORT_SHA256="3b70dac41c775c41913ff3a13c77beeaee375b995f41940e62ace648119c4622"
+  say "php-src: 8.0 security backports (${BACKPORT_COMMIT:0:12})"
+  curl -fSL -o php-src-backports.tar.gz \
+    "https://github.com/shivammathur/php-src-backports/archive/${BACKPORT_COMMIT}.tar.gz"
+  echo "$BACKPORT_SHA256  php-src-backports.tar.gz" | shasum -a 256 -c - \
     || { echo "::error::php-src checksum mismatch — refusing to patch an unpinned source"; exit 1; }
-  rm -rf patched && mkdir patched && tar -C patched -xf php-src.tar.xz
-  SRC_DIR="patched/php-${PHP_VERSION}"
+  rm -rf patched && mkdir patched && tar -C patched -xzf php-src-backports.tar.gz
+  BP_NAME="php-src-backports-${BACKPORT_COMMIT}"
+  SRC_DIR="patched/$BP_NAME"
+  grep -q "#define PHP_VERSION \"${PHP_VERSION}\"" "$SRC_DIR/main/php_version.h" \
+    || { echo "::error::backported source is not PHP ${PHP_VERSION}"; exit 1; }
+  grep -q 'zend_mm_safe_error_ex' "$SRC_DIR/Zend/zend_alloc.c" \
+    || { echo "::error::backported source lacks the CVE-2026-109618/109619 fix"; exit 1; }
+  mkdir -p "$OUT"
+  cp php-src-backports.tar.gz "$OUT/php-src-backports-${BACKPORT_COMMIT:0:12}.tar.gz"
   HITS=0
   for f in "$SRC_DIR/configure" "$SRC_DIR/ext/intl/config.m4"; do
+    [ -f "$f" ] || continue
     n="$(grep -c -e '-std=c++11' -e 'COMPILE_STDCXX(11' "$f" || true)"
     HITS=$((HITS + n))
     sed -i.orig -e 's/-std=c++11/-std=c++17/g' -e 's/COMPILE_STDCXX(11/COMPILE_STDCXX(17/g' "$f" && rm -f "$f.orig"
   done
   [ "$HITS" -gt 0 ] || { echo "::error::found no C++11 request to raise in $PHP_VERSION — the patch would be a no-op"; exit 1; }
   echo "  raised $HITS C++11 requests to C++17"
-  tar -C patched -czf php-src-patched.tar.gz "php-${PHP_VERSION}"
+  tar -C patched -czf php-src-patched.tar.gz "$BP_NAME"
   rm -rf patched
   CUSTOM_URL_ARGS+=(--custom-url="php-src:file://$(pwd)/php-src-patched.tar.gz")
   echo "  patched source: $(shasum -a 256 php-src-patched.tar.gz | cut -d' ' -f1)"
@@ -467,6 +484,44 @@ say "download sources"
   $( [ "$PREBUILT" = "true" ] && echo --prefer-pre-built ) \
   --retry=5 \
   --debug
+
+# ─── PHP 8.0: extract php-src ourselves, so spc's libxml2 patch is not forced ─
+#
+# spc patches every php-src < 8.1 on extraction with spc_fix_libxml2_12_php80.patch
+# (SourcePatcher::patchPhpLibxml212). The security-backports source ALREADY
+# carries that fix — its libxml.c/soap/dom hunks are there verbatim — except one
+# whitespace hunk whose context a later backport rewrote. So spc's "already
+# applied?" probe (`patch -R --dry-run`) fails, the forward apply fails, and the
+# build dies: `Cannot extract source php-src: Patch file
+# [spc_fix_libxml2_12_php80.patch] failed to apply` (run 40004664364, both Linux
+# arches, and locally on macOS x86_64).
+#
+# spc skips extraction — and with it every php-src hook — when source/php-src
+# exists with a .spc-hash equal to the lock's hash (SourceManager, 2.8.5). So we
+# extract it, write that hash, and do by hand the two hooks that still apply off
+# Windows: spc_fix_alpine_build_php80.patch, and patchImapLicense (an Apache
+# LICENSE for 8.0's bundled ext/imap). Both files are spc's own at the pinned
+# tag, pinned again by hash here. The lock's hash is asserted to be the sha1 of
+# the tarball we built, so this can only ever skip OUR source.
+if [ "${PATCH_INTL_CXX17:-}" = "1" ]; then
+  say "php-src: pre-extract (spc's libxml2 2.12 patch is already in the backport)"
+  LOCK_HASH="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["php-src"]["hash"])' downloads/.lock.json)"
+  [ "$LOCK_HASH" = "$(shasum -a 1 downloads/php-src-patched.tar.gz | cut -d' ' -f1)" ] \
+    || { echo "::error::spc's php-src lock is not our patched tarball — refusing to pre-extract"; exit 1; }
+  SPC_RAW="https://raw.githubusercontent.com/crazywhalecc/static-php-cli/${SPC_VERSION}/src/globals"
+  curl -fsSL -o alpine80.patch "$SPC_RAW/patch/spc_fix_alpine_build_php80.patch"
+  echo "d49fb1ae8558e5fc6d03e21c220240ff79277071b2f9ae385b2e629a488073e4  alpine80.patch" | shasum -a 256 -c - \
+    || { echo "::error::spc_fix_alpine_build_php80.patch checksum mismatch"; exit 1; }
+  curl -fsSL -o Apache_LICENSE "$SPC_RAW/extra/Apache_LICENSE"
+  echo "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  Apache_LICENSE" | shasum -a 256 -c - \
+    || { echo "::error::Apache_LICENSE checksum mismatch"; exit 1; }
+  rm -rf source/php-src && mkdir -p source/php-src
+  tar -C source/php-src --strip-components=1 -xzf downloads/php-src-patched.tar.gz
+  ( cd source/php-src && patch -p1 --forward < ../../alpine80.patch )
+  [ -f source/php-src/ext/imap/LICENSE ] || cp Apache_LICENSE source/php-src/ext/imap/LICENSE
+  printf '%s' "$LOCK_HASH" > source/php-src/.spc-hash
+  rm -f alpine80.patch Apache_LICENSE
+fi
 
 say "doctor"
 ./spc doctor --auto-fix || true
@@ -668,7 +723,13 @@ if [ "$UP_STATUS" = "200" ]; then
   # builder versions while the CAPABILITY does not: `SWOOLE_SSL` is defined in
   # both artifacts, and a full `get_defined_constants()` diff shows no other
   # difference. Measured, both directions, before it was allowed in here.
-  DELIBERATE='^--enable-micro$|^--with-readline$|^--enable-swoole-ssh$|^--with-libedit$|^--enable-swoole-pgsql$|^--enable-swoole-sqlite$|^--enable-openssl$'
+  #
+  # `--enable-shared` is libtool's "build shared libraries", and only upstream's
+  # Linux 8.0.30 (Nov 2024, an older spc) carries it. Their binary is `statically
+  # linked, no section header` with no dynamic symbol table at all — measured
+  # 24 Oct 2026 — so the flag produced nothing a site can reach; ours passes the
+  # module and function gates against it unchanged (run 40006436021).
+  DELIBERATE='^--enable-micro$|^--with-readline$|^--enable-swoole-ssh$|^--with-libedit$|^--enable-swoole-pgsql$|^--enable-swoole-sqlite$|^--enable-openssl$|^--enable-shared$'
   THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
   flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
   flags "$BIN/php" > "$OURS_FLAGS"
