@@ -119,7 +119,6 @@ RELEASE_TAG_FOR() {
     # no c-ares (gate 9), so a site's own curl resolves .rex names. -3…-7 linked
     # c-ares and are as wrong to offer now as -1/-2 were — and rexenv's
     # `php_self_hosted_tag` moved to -8 in the same change.
-    8.1.34) echo "php-8x-8" ;;
     8.2.32) echo "php-8x-8" ;;
     8.3.32) echo "php-8x-8" ;;
     8.4.23) echo "php-8x-8" ;;
@@ -129,12 +128,18 @@ RELEASE_TAG_FOR() {
     # none of these four, so the build's flags/functions gates had no upstream to
     # compare against (a 404 WARNING); 8.3.36 was diffed by hand against our own
     # php-8x-8 8.3.32 instead — functions, classes, modules and configure flags
-    # identical but for build paths. 8.1 has no php.net patch at all: it needs
-    # the backported source, like 7.4.
+    # identical but for build paths — and 8.2.35, 8.4.27 and 8.5.12 the same way,
+    # every artifact of both arches.
     8.2.35) echo "php-8x-9" ;;
     8.3.36) echo "php-8x-9" ;;
     8.4.27) echo "php-8x-9" ;;
     8.5.12) echo "php-8x-9" ;;
+    # php-8x-10 (23 Oct 2026): 8.1 has no php.net patch for that release — EOL.
+    # Built from shivammathur's PHP-8.1-security-backports, which still calls
+    # itself 8.1.34, so the VERSION is unchanged and only the bytes move. The
+    # manifest cannot move a version the app pins (a pin beats the catalog), so
+    # this row only matters together with rexenv's own pin bump to -10.
+    8.1.34) echo "php-8x-10" ;;
     *)      echo "" ;;
   esac
 }
