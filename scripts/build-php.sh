@@ -723,7 +723,13 @@ if [ "$UP_STATUS" = "200" ]; then
   # builder versions while the CAPABILITY does not: `SWOOLE_SSL` is defined in
   # both artifacts, and a full `get_defined_constants()` diff shows no other
   # difference. Measured, both directions, before it was allowed in here.
-  DELIBERATE='^--enable-micro$|^--with-readline$|^--enable-swoole-ssh$|^--with-libedit$|^--enable-swoole-pgsql$|^--enable-swoole-sqlite$|^--enable-openssl$'
+  #
+  # `--enable-shared` is libtool's "build shared libraries", and only upstream's
+  # Linux 8.0.30 (Nov 2024, an older spc) carries it. Their binary is `statically
+  # linked, no section header` with no dynamic symbol table at all — measured
+  # 24 Oct 2026 — so the flag produced nothing a site can reach; ours passes the
+  # module and function gates against it unchanged (run 40006436021).
+  DELIBERATE='^--enable-micro$|^--with-readline$|^--enable-swoole-ssh$|^--with-libedit$|^--enable-swoole-pgsql$|^--enable-swoole-sqlite$|^--enable-openssl$|^--enable-shared$'
   THEIRS_FLAGS="$(mktemp)"; OURS_FLAGS="$(mktemp)"
   flags /tmp/upstream-php/php > "$THEIRS_FLAGS"
   flags "$BIN/php" > "$OURS_FLAGS"
