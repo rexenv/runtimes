@@ -1,0 +1,187 @@
+name: Mirror Apache httpd for Windows (Apache Lounge)
+
+# Manual only, like every workflow here.
+#
+# Why this exists: the Apache Software Foundation publishes no Windows binary of
+# httpd. The build every Windows PHP stack has shipped for a decade is Apache
+# Lounge's — unmodified ASF source, Apache-2.0, built with Visual Studio (VS18
+# since 2.4.69). rexenv's per-site Apache override on Windows runs it
+# (rexenv docs/PLAN-windows-servers.md D1).
+#
+# Mirrored rather than pinned at apachelounge.com because that site keeps ONLY
+# the current build: the day 2.4.70 lands, the 2.4.69 zip is gone and every
+# rexenv pinning it fails its download. A release here is immutable, attested,
+# and gated:
+#
+#   1. the zip is the bytes chosen — its sha256 is pinned below AND re-read from
+#      Apache Lounge's own published checksum file at mirror time (both must agree);
+#   2. it holds `Apache24/bin/httpd.exe` and every module rexenv's generated conf
+#      loads (no mod_mpm_event / mod_unixd: on Windows the MPM is mpm_winnt,
+#      compiled in);
+#   3. on a real Windows runner `httpd.exe -v` names 2.4.69 and a conf that loads
+#      exactly rexenv's module set passes `httpd.exe -t`;
+#   4. rexenv becomes the DISTRIBUTOR of these bytes, so the licence texts ride
+#      beside them: the ASF source tarball's LICENSE and NOTICE (tarball verified
+#      against the ASF's sha512) plus Apache Lounge's ReadMe, as
+#      `licenses-httpd-<version>-windows.tar.gz`.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a re-mirror is the next number."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = run the gates only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  HTTPD_VERSION: "2.4.69"
+  # Apache Lounge's build id for this version (part of the file name).
+  AL_BUILD: "261002"
+  AL_ZIP: "httpd-2.4.69-261002-Win64-VS18.zip"
+  AL_URL: "https://www.apachelounge.com/download/VS18/binaries"
+  # sha256 of the zip as measured 24 Oct 2026 — also published by Apache Lounge in <zip>.txt.
+  AL_SHA256: "9f1f93cab9a0c6dc5e628aa640784bb30347f93fcd01b46a4c0d6b5ba76bf4e2"
+  # The ASF source tarball (for LICENSE + NOTICE) and its published sha512.
+  SRC_URL: "https://archive.apache.org/dist/httpd/httpd-2.4.69.tar.bz2"
+  SRC_SHA512: "ca9c5808eef7a0d8d88148b0d2d6045b5a0151823f09afc786b283cef9990036a9c7bc53d043e2f67b6ec06db05f655aa961cb875fa7ad0911fa04fdd295bd93"
+  # The modules rexenv's generated conf loads on Windows (core/apache.rs MODULES minus the
+  # two POSIX-only ones). A build missing one is useless to rexenv.
+  MODULES: "mod_authz_core mod_dir mod_mime mod_env mod_log_config mod_rewrite mod_proxy mod_proxy_fcgi"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download, check, pack the licences
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          UA="rexenv-runtimes-mirror (+https://github.com/rexenv/runtimes)"
+          curl -fsSL -A "$UA" -o "out/$AL_ZIP" "$AL_URL/$AL_ZIP"
+          curl -fsSL -A "$UA" -o "work/$AL_ZIP.txt" "$AL_URL/$AL_ZIP.txt"
+          echo "$AL_SHA256  out/$AL_ZIP" | sha256sum -c -
+          # Apache Lounge's own checksum file must name the same bytes (UTF-8 BOM, CRLF, upper-case hex).
+          PUB="$(tr -d '\r' < "work/$AL_ZIP.txt" | grep -A1 '^SHA256-Checksum' | tail -1 | tr 'A-F' 'a-f' | tr -cd '0-9a-f')"
+          [ "$PUB" = "$AL_SHA256" ] || { echo "::error::Apache Lounge publishes sha256 '$PUB', the pin is '$AL_SHA256'"; exit 1; }
+          unzip -q "out/$AL_ZIP" -d work/al
+          [ -f work/al/Apache24/bin/httpd.exe ] || { echo "::error::no Apache24/bin/httpd.exe in the zip"; exit 1; }
+          for m in $MODULES; do
+            [ -f "work/al/Apache24/modules/$m.so" ] || { echo "::error::the zip lacks modules/$m.so"; exit 1; }
+          done
+          [ -f work/al/Apache24/conf/mime.types ] || { echo "::error::no conf/mime.types"; exit 1; }
+          [ -f work/al/ReadMe.txt ] || { echo "::error::no ReadMe.txt"; exit 1; }
+          # The licence texts, from the ASF source of the SAME version.
+          curl -fsSL -o work/src.tar.bz2 "$SRC_URL"
+          echo "$SRC_SHA512  work/src.tar.bz2" | sha512sum -c -
+          mkdir -p work/lic
+          tar -xjf work/src.tar.bz2 -C work/lic --strip-components=1 "httpd-$HTTPD_VERSION/LICENSE" "httpd-$HTTPD_VERSION/NOTICE"
+          cp work/al/ReadMe.txt work/lic/ReadMe-ApacheLounge.txt
+          printf 'Apache httpd %s for Windows x64, built by Apache Lounge (%s) from the unmodified ASF source and mirrored by rexenv.\nLICENSE and NOTICE are the ASF'"'"'s, from %s.\n' "$HTTPD_VERSION" "$AL_URL/$AL_ZIP" "$SRC_URL" > work/lic/README.txt
+          tar -czf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" -C work/lic LICENSE NOTICE ReadMe-ApacheLounge.txt README.txt
+          ls -lh out
+      - uses: actions/upload-artifact@v7
+        with: { name: httpd-windows, path: out }
+
+  verify:
+    needs: fetch
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: httpd-windows, path: out }
+      - name: Run it
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q "out/$AL_ZIP" -d al
+          ROOT="$(cygpath -w "$PWD/al/Apache24")"
+          ./al/Apache24/bin/httpd.exe -v | tr -d '\r'
+          ./al/Apache24/bin/httpd.exe -v | tr -d '\r' | grep -q "Apache/$HTTPD_VERSION " || { echo "::error::httpd.exe is not $HTTPD_VERSION"; exit 1; }
+          # rexenv's conf, in shape: ServerRoot, Listen, exactly its module set, the fcgi handler.
+          {
+            echo "ServerRoot \"$ROOT\""
+            echo "Listen 127.0.0.1:8311"
+            for m in $MODULES; do echo "LoadModule ${m#mod_}_module \"modules/$m.so\""; done
+            echo "ServerName gate.rex"
+            echo "ErrorLog \"logs/gate-error.log\""
+            echo "TypesConfig \"conf/mime.types\""
+            echo "DocumentRoot \"$ROOT/htdocs\""
+            echo "<FilesMatch \"\\.php$\">"
+            echo "  SetHandler \"proxy:fcgi://127.0.0.1:9783\""
+            echo "</FilesMatch>"
+            echo "RewriteEngine On"
+          } > gate.conf
+          ./al/Apache24/bin/httpd.exe -t -f "$(cygpath -w "$PWD/gate.conf")" 2>&1 | tr -d '\r' | tee t.out
+          grep -q "Syntax OK" t.out || { echo "::error::rexenv's module set does not load"; exit 1; }
+          # It serves: start it in the background on the gate port, fetch, stop it through its own signal.
+          ./al/Apache24/bin/httpd.exe -f "$(cygpath -w "$PWD/gate.conf")" &
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8311/ && break; sleep 1; done
+          curl -sS -D - -o /dev/null http://127.0.0.1:8311/ | tr -d '\r' | grep -i '^Server:' | tee server.out
+          grep -q "Apache/$HTTPD_VERSION" server.out || { echo "::error::no Apache Server header on the gate port"; exit 1; }
+          ./al/Apache24/bin/httpd.exe -k shutdown -f "$(cygpath -w "$PWD/gate.conf")" || true
+          sleep 3
+          if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:8311/; then echo "::error::httpd still answers after -k shutdown"; exit 1; fi
+          echo "httpd $HTTPD_VERSION: version ok, rexenv's module set loads, serves, shuts down on its own signal"
+          tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | tr -d '\r' | sort | tr '\n' ' '; echo
+          tar -tzf "out/licenses-httpd-$HTTPD_VERSION-windows.tar.gz" | grep -qx LICENSE || { echo "::error::no LICENSE in the licences archive"; exit 1; }
+
+  publish:
+    needs: [fetch, verify]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { name: httpd-windows, path: out }
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false) echo "::error::immutable releases are OFF — a published pin could be silently replaced."; exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="httpd-windows-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A re-mirror is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assert the set is complete
+        run: |
+          set -euo pipefail
+          for f in "$AL_ZIP" "licenses-httpd-$HTTPD_VERSION-windows.tar.gz"; do
+            [ -f "out/$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
+          done
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/*.zip
+            out/*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "Apache httpd $HTTPD_VERSION for Windows x64 — Apache Lounge build $AL_BUILD, mirrored (build ${{ inputs.build_number }})" \
+            --notes "Mirror of Apache Lounge's \`$AL_ZIP\` (unmodified ASF source, Apache-2.0, VS18), kept here because Apache Lounge publishes only its current build. Gated in .github/workflows/httpd-windows.yml: pinned sha256 equal to Apache Lounge's published checksum; \`Apache24/bin/httpd.exe\` and rexenv's module set present; on Windows, \`httpd -v\` names $HTTPD_VERSION, rexenv's conf passes \`-t\`, serves, and stops on \`-k shutdown\`. Licences: \`licenses-httpd-$HTTPD_VERSION-windows.tar.gz\` (the ASF's LICENSE + NOTICE from the $HTTPD_VERSION source tarball, sha512-verified; Apache Lounge's ReadMe). Needs the Microsoft Visual C++ Redistributable (x64), as php.net's PHP does."
