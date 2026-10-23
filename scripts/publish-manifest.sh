@@ -140,6 +140,10 @@ RELEASE_TAG_FOR() {
     # manifest cannot move a version the app pins (a pin beats the catalog), so
     # this row only matters together with rexenv's own pin bump to -10.
     8.1.34) echo "php-8x-10" ;;
+    # php-8x-11 (24 Oct 2026): 8.0.30, ours for the first time, from
+    # shivammathur/php-src-backports @ 190a0202b460 for the same CVEs. Version
+    # unchanged, so like 8.1.34 this row only matters with rexenv's pin bump to -11.
+    8.0.30) echo "php-8x-11" ;;
     *)      echo "" ;;
   esac
 }
