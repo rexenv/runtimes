@@ -35,6 +35,14 @@ on:
         description: "Optional: space-separated x.y.z to publish instead of discovering (e.g. '8.3.32 8.4.24')."
         required: false
         default: ""
+      document:
+        description: "Which OS's document this run signs (one document per OS, its own serial — rexenv docs/PLAN-per-os-php-manifests.md)"
+        type: choice
+        default: "macOS — manifest.json (frozen schema; the rexenv/runtimes macOS builds)"
+        options:
+          - "macOS — manifest.json (frozen schema; the rexenv/runtimes macOS builds)"
+          - "Linux — manifest-linux.json (the rexenv/runtimes Linux builds, php-8x-linux-N)"
+          - "Windows — manifest-windows.json (php.net's NTS zips from the archive directory)"
 
 permissions:
   contents: write # commit manifest.json + manifest.json.sig to the branch
@@ -43,7 +51,9 @@ concurrency:
   # The serial is read-then-incremented from the published release, so two runs
   # at once would compute the same next serial and the second would publish a
   # document the app refuses as a replay. Queue instead.
-  group: publish-manifest
+  # Per DOCUMENT: each has its own serial, so a Linux publish need not wait on a macOS one,
+  # and two runs on the same document still queue.
+  group: publish-manifest-${{ startsWith(inputs.document, 'Linux') && 'linux' || startsWith(inputs.document, 'Windows') && 'windows' || 'macos' }}
   cancel-in-progress: false
 
 jobs:
@@ -70,6 +80,8 @@ jobs:
           # that holds the signing key.
           DRY_RUN: ${{ startsWith(inputs.mode, 'dry-run') }}
           VERSIONS: ${{ inputs.versions }}
+          DOCUMENT: ${{ startsWith(inputs.document, 'Linux') && 'linux' || startsWith(inputs.document, 'Windows') && 'windows' || 'macos' }}
+          DOC_FILE: ${{ startsWith(inputs.document, 'Linux') && 'manifest-linux.json' || startsWith(inputs.document, 'Windows') && 'manifest-windows.json' || 'manifest.json' }}
           # Where a dry run writes the document it computed — uploaded below, so
           # the artifact is what the run WOULD publish, not the tracked file.
           MANIFEST_DRY_OUT: ${{ runner.temp }}/manifest-dry-run
@@ -84,6 +96,7 @@ jobs:
           # if, not `[ … ] && …`: under `set -e` a false test IS a failing
           # command, so the && form aborts the job on every REAL publish.
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          args+=(--document "$DOCUMENT")
           # Unquoted ON PURPOSE: the input is a space-separated list of versions.
           # The script validates each against x.y.z and against the minors rexenv
           # ships, so a junk value is refused rather than probed.
@@ -101,23 +114,24 @@ jobs:
         with:
           name: manifest
           path: |
-            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/manifest.json', runner.temp) || 'manifest.json' }}
-            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/manifest.json.sig', runner.temp) || 'manifest.json.sig' }}
+            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/', runner.temp) || '.' }}manifest*.json
+            ${{ startsWith(inputs.mode, 'dry-run') && format('{0}/manifest-dry-run/', runner.temp) || '.' }}manifest*.json.sig
           if-no-files-found: ignore
 
       - name: What a user's app will see
         if: ${{ !startsWith(inputs.mode, 'dry-run') }}
         env:
           GH_TOKEN: ${{ github.token }}
+          DOC_FILE: ${{ startsWith(inputs.document, 'Linux') && 'manifest-linux.json' || startsWith(inputs.document, 'Windows') && 'manifest-windows.json' || 'manifest.json' }}
         run: |
           set -euo pipefail
           # Read it back through the API, not `raw.githubusercontent.com`: raw is
           # CDN-cached for minutes, so a fetch here would compare against the
           # PREVIOUS document and this check would fail on every successful run.
           # The API is authoritative the moment the commit lands.
-          gh api "repos/${{ github.repository }}/contents/manifest.json" --jq '.content' \
+          gh api "repos/${{ github.repository }}/contents/$DOC_FILE" --jq '.content' \
             | base64 -d > fetched.json
-          cmp -s fetched.json manifest.json \
+          cmp -s fetched.json "$DOC_FILE" \
             || { echo "::error::the committed manifest is not the one this run signed"; exit 1; }
           echo "published serial: $(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' fetched.json)"
           echo "entries: $(grep -o '"name"' fetched.json | wc -l)"

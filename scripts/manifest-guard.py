@@ -25,10 +25,10 @@ The rules, per document kind:
            `arm64` or `x86_64` for php / php-fpm / php-licenses, `any` for adminer and
            phpmyadmin (the
            app release carries no arch — the macOS bundle is universal).
-  windows  a row or release that carries `os` must say "windows".
-  linux    a row or release that carries `os` must say "linux".
-           No per-OS PHP document exists yet, so their arch spelling is not asserted here —
-           the row that publishes the first one adds it (rexenv docs/TODO.md).
+  windows  a row or release that carries `os` must say "windows"; in the PHP document
+           (`manifest-windows.json`, 24 Oct 2026) every php row IS marked, file rows are not,
+           there is no php-fpm row, and arch is `arm64`/`x86_64` (`any` for the consoles).
+  linux    the same for "linux" (`manifest-linux.json`; php AND php-fpm rows).
 The names are `std::env::consts::OS`'s, which is what rexenv compares against.
 
 Exit 0 = the document may be signed. Exit 1 = REFUSE, with every violation named.
@@ -72,6 +72,26 @@ def violations(doc, kind):
                 bad.append(f"{where}: `name` = {row.get('name')!r} is no family rexenv resolves")
         elif "os" in row and os_ != kind:
             bad.append(f"{where}: carries `os` = {os_!r} inside the {kind} document")
+        elif "name" in row:
+            # The per-OS PHP documents (rexenv docs/PLAN-per-os-php-manifests.md): a php /
+            # php-fpm row MUST be marked with this document's os (an unmarked one is a Mac's
+            # to every rexenv since PR #5), a file row (licences, adminer, phpmyadmin) must
+            # NOT be (it is admitted everywhere, told apart by its URL), and the arch spelling
+            # is what rexenv's `catalog_arch` asks for on that OS — `arm64` / `x86_64` for the
+            # PHP families, `any` for the consoles. Windows has no php-fpm row: the pool is
+            # php-cgi inside the php zip.
+            name = row.get("name")
+            if name in ("php", "php-fpm") and "os" not in row:
+                bad.append(f"{where}: a {name} row in the {kind} document must carry `os` = {kind!r} — unmarked, rexenv reads it as a Mac's")
+            if name in ("php-licenses", "adminer", "phpmyadmin") and "os" in row:
+                bad.append(f"{where}: a {name} row is a file row and carries no `os` (it is told apart by its URL)")
+            if kind == "windows" and name == "php-fpm":
+                bad.append(f"{where}: Windows has no php-fpm — the pool is php-cgi inside the php zip")
+            allowed = MACOS_ARCH_BY_FAMILY.get(name)
+            if allowed is None:
+                bad.append(f"{where}: `name` = {name!r} is no family rexenv resolves")
+            elif arch not in allowed:
+                bad.append(f"{where}: `arch` = {arch!r} is not one rexenv resolves for {name} ({', '.join(sorted(allowed))})")
     return bad
 
 
@@ -92,6 +112,12 @@ def self_test():
         (ok({"serial": 1, "release": {"version": "0.8.11"}}, "linux"), "linux release unmarked"),
         (ok({"serial": 1, "release": {"version": "0.8.11", "os": "linux", "arch": "aarch64"}}, "linux"), "linux release marked linux aarch64"),
         (ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x86_64", "os": "windows"}]}, "windows"), "a Windows php row in the Windows document"),
+        (ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "arm64", "os": "linux"}, {"name": "php-fpm", "version": "8.3.1", "arch": "x86_64", "os": "linux"}, {"name": "php-licenses", "version": "8.3.1", "arch": "arm64"}, {"name": "adminer", "version": "6.1.2", "arch": "any"}]}, "linux"), "a Linux PHP document: marked php rows, unmarked file rows"),
+        (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x86_64"}]}, "windows"), "an UNMARKED php row in the Windows document (a Mac's, to rexenv)"),
+        (not ok({"serial": 1, "artifacts": [{"name": "php-fpm", "version": "8.3.1", "arch": "x86_64", "os": "windows"}]}, "windows"), "a php-fpm row in the Windows document (the pool is php-cgi)"),
+        (not ok({"serial": 1, "artifacts": [{"name": "adminer", "version": "6.1.2", "arch": "any", "os": "linux"}]}, "linux"), "a MARKED file row (adminer) in the Linux document"),
+        (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x64", "os": "windows"}]}, "windows"), "a foreign arch spelling (x64) in the Windows document"),
+        (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "aarch64", "os": "linux"}]}, "linux"), "aarch64 in the Linux document (rexenv asks arm64)"),
         # the shapes the ruling forbids are refused
         (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x86_64", "os": "windows"}]}, "macos"), "a Windows row in the macOS manifest"),
         (not ok({"serial": 1, "artifacts": [{"name": "php", "version": "8.3.1", "arch": "x86_64", "os": "macos"}]}, "macos"), "even `os: macos` in the frozen macOS manifest"),
