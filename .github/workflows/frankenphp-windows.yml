@@ -1,0 +1,154 @@
+name: Mirror FrankenPHP for Windows (upstream's zip)
+
+# Manual only, like every workflow here.
+#
+# Why this exists: upstream publishes `frankenphp-windows-x86_64.zip` on the
+# v1.13.3 release — and REPLACED it in place on 24 Oct 2026 (a rebuilt
+# frankenphp.exe, same name, new bytes: sha256 c744d35c… at 12:44 on the 23rd,
+# eb6cbfc5… at 08:16Z on the 24th). rexenv pins by digest, so a pin at the
+# upstream URL became "checksum mismatch … the upstream file changed" on a
+# user's first FrankenPHP site (the Dell, 24 Oct 2026). A release here is
+# immutable, attested, and gated:
+#
+#   1. the zip is the bytes chosen — its sha256 is pinned below AND must equal the
+#      digest GitHub's API reports for the asset at mirror time;
+#   2. it holds `frankenphp.exe`, the official `php8ts.dll` and the `ext/` DLLs;
+#   3. on a real Windows runner `frankenphp.exe version` names the release and its
+#      embedded PHP is the version pinned below (`php-cli -r 'echo PHP_VERSION;'`);
+#   4. rexenv becomes the DISTRIBUTOR of these bytes, so the licence texts ride
+#      beside them: FrankenPHP's MIT LICENSE (from the tagged source), Caddy's
+#      Apache-2.0 LICENSE (from the Caddy tag FrankenPHP embeds), PHP's licence and
+#      the redistributable-binaries notes from inside the zip, as
+#      `licenses-frankenphp-<version>-windows.tar.gz` with the `licenses/` top dir
+#      rexenv unpacks.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a re-mirror is the next number."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = run the gates only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  FP_VERSION: "1.13.3"
+  PHP_EMBEDDED: "8.5.12"
+  CADDY_TAG: "v2.11.7"
+  ZIP: "frankenphp-windows-x86_64.zip"
+  ZIP_SHA256: "eb6cbfc5a86b04d294d84f39d55fb6ac32826cacf3e6ce55412ed95cce50d9fb"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download, check, pack the licences
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          curl -fsSL -o "out/$ZIP" "https://github.com/php/frankenphp/releases/download/v$FP_VERSION/$ZIP"
+          echo "$ZIP_SHA256  out/$ZIP" | sha256sum -c -
+          API="$(gh api "repos/php/frankenphp/releases/tags/v$FP_VERSION" --jq ".assets[] | select(.name==\"$ZIP\") | .digest")"
+          [ "$API" = "sha256:$ZIP_SHA256" ] || { echo "::error::GitHub reports $API for $ZIP; the pin is sha256:$ZIP_SHA256 — upstream replaced it again"; exit 1; }
+          unzip -q "out/$ZIP" -d work/fp
+          for f in frankenphp.exe php8ts.dll license.txt readme-redist-bins.txt; do
+            [ -f "work/fp/$f" ] || { echo "::error::the zip lacks $f"; exit 1; }
+          done
+          [ "$(ls work/fp/ext/php_*.dll | wc -l)" -ge 30 ] || { echo "::error::too few ext/*.dll"; exit 1; }
+          grep -q "^Version: $PHP_EMBEDDED" work/fp/snapshot.txt || { echo "::error::snapshot.txt does not say PHP $PHP_EMBEDDED"; exit 1; }
+          mkdir -p work/lic/licenses
+          curl -fsSL -o work/lic/licenses/LICENSE-frankenphp "https://raw.githubusercontent.com/php/frankenphp/v$FP_VERSION/LICENSE"
+          curl -fsSL -o work/lic/licenses/LICENSE-caddy "https://raw.githubusercontent.com/caddyserver/caddy/$CADDY_TAG/LICENSE"
+          grep -q "MIT License" work/lic/licenses/LICENSE-frankenphp || { echo "::error::FrankenPHP's LICENSE is not the MIT text"; exit 1; }
+          grep -q "Apache License" work/lic/licenses/LICENSE-caddy || { echo "::error::Caddy's LICENSE is not Apache-2.0"; exit 1; }
+          cp work/fp/license.txt work/lic/licenses/LICENSE-php.txt
+          cp work/fp/readme-redist-bins.txt work/lic/licenses/readme-redist-bins.txt
+          printf 'FrankenPHP %s for Windows x64 — upstream'"'"'s own build (php/frankenphp release v%s, asset %s), mirrored by rexenv because the asset was replaced in place upstream.\nFrankenPHP: MIT (LICENSE-frankenphp). Caddy %s: Apache-2.0 (LICENSE-caddy). Embedded PHP %s: PHP License 3.01 (LICENSE-php.txt); the bundled third-party DLLs are listed in readme-redist-bins.txt.\n' "$FP_VERSION" "$FP_VERSION" "$ZIP" "$CADDY_TAG" "$PHP_EMBEDDED" > work/lic/licenses/README.txt
+          tar -czf "out/licenses-frankenphp-$FP_VERSION-windows.tar.gz" -C work/lic licenses
+          tar -tzf "out/licenses-frankenphp-$FP_VERSION-windows.tar.gz" | grep -qx licenses/LICENSE-frankenphp
+          ls -lh out
+      - uses: actions/upload-artifact@v7
+        with: { name: frankenphp-windows, path: out }
+
+  verify:
+    needs: fetch
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-windows, path: out }
+      - name: Run it
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q "out/$ZIP" -d fp
+          ./fp/frankenphp.exe version | tr -d '\r' | tee v.out
+          grep -q "FrankenPHP v$FP_VERSION " v.out || { echo "::error::not FrankenPHP $FP_VERSION"; exit 1; }
+          ./fp/frankenphp.exe php-cli -r 'echo PHP_VERSION;' | tr -d '\r' | tee php.out; echo
+          [ "$(cat php.out)" = "$PHP_EMBEDDED" ] || { echo "::error::embedded PHP is $(cat php.out), the pin says $PHP_EMBEDDED"; exit 1; }
+          # The SMTP ini keys FrankenPHP's Windows site config sets (rexenv's mail catch there).
+          ./fp/frankenphp.exe php-cli -d SMTP=127.0.0.1 -d smtp_port=11025 -r 'echo ini_get("SMTP") . ":" . ini_get("smtp_port");' | tr -d '\r' | tee ini.out; echo
+          [ "$(cat ini.out)" = "127.0.0.1:11025" ] || { echo "::error::SMTP ini keys not honoured"; exit 1; }
+          echo "frankenphp $FP_VERSION: version ok, PHP $PHP_EMBEDDED, SMTP ini keys honoured"
+
+  publish:
+    needs: [fetch, verify]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-windows, path: out }
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false) echo "::error::immutable releases are OFF — a published pin could be silently replaced."; exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="frankenphp-windows-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A re-mirror is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assert the set is complete
+        run: |
+          set -euo pipefail
+          for f in "$ZIP" "licenses-frankenphp-$FP_VERSION-windows.tar.gz"; do
+            [ -f "out/$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
+          done
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/*.zip
+            out/*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "FrankenPHP $FP_VERSION for Windows x64 — upstream's build, mirrored (build ${{ inputs.build_number }})" \
+            --notes "Mirror of php/frankenphp v$FP_VERSION's \`$ZIP\` (upstream's own build: frankenphp.exe + the official PHP $PHP_EMBEDDED TS DLLs), kept here because upstream replaced that asset in place on 24 Oct 2026 and rexenv pins by digest. Gated in .github/workflows/frankenphp-windows.yml: pinned sha256 equal to GitHub's digest for the asset; frankenphp.exe, php8ts.dll and the ext/ DLLs present; on Windows, \`frankenphp version\` names $FP_VERSION, its PHP is $PHP_EMBEDDED, the SMTP ini keys are honoured. Licences: \`licenses-frankenphp-$FP_VERSION-windows.tar.gz\` (FrankenPHP MIT, Caddy $CADDY_TAG Apache-2.0, PHP License 3.01, the redistributable-binaries notes)."
