@@ -374,6 +374,21 @@ else
     | sed -n 's/.*"name":"phpmyadmin","version":"\([^"]*\)".*/\1/p' | sort -Vu)"
 fi
 SERIAL=$((CUR + 1))
+# A per-OS document's FIRST serial must clear the macOS document's current one: every
+# Windows and Linux rexenv shipped before 24 Oct 2026 read `manifest.json` and remembers
+# ITS serial as the highest accepted (one number per install, not per document), so a
+# fresh `manifest-windows.json` at serial 1 is refused as a replay — measured on the Dell
+# the day the Windows document was first published ("serial (1) is OLDER than the highest
+# already accepted (11)"). Starting above the macOS serial costs nothing and makes the
+# first per-OS document the one those installs accept.
+if [ "$DOC" != macos ] && [ "$FIRST_RUN" -eq 1 ]; then
+  MAC_SERIAL="$(gh api "repos/$REPO/contents/manifest.json" --jq '.content' 2>/dev/null | base64 -d \
+    | sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | head -1)"
+  if [ -n "$MAC_SERIAL" ] && [ "$SERIAL" -le "$MAC_SERIAL" ]; then
+    echo "first $DOC document: serial $SERIAL → $((MAC_SERIAL + 1)) (above the macOS document's $MAC_SERIAL, which every pre-24-Oct-2026 install remembers)" >&2
+    SERIAL=$((MAC_SERIAL + 1))
+  fi
+fi
 # A FLOOR, for the one case the read cannot see: the manifest used to be a
 # release asset, and that release is gone (GitHub burns a tag once an immutable
 # release on it is deleted). Installs that accepted serial 1 from the OLD home

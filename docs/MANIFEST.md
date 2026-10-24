@@ -302,6 +302,14 @@ OS-neutral (php.net's newest patch per minor), so publish all three after a new 
 says "BUILD IT FIRST" until `php-8x-linux-N` carries it (`LINUX_RELEASE_TAG_FOR`), Windows
 needs no build (php.net's zip, hashed here, pinned by digest).
 
+**The first per-OS serial starts ABOVE the macOS document's.** A rexenv remembers ONE
+highest-accepted serial, not one per document, and every Windows/Linux install shipped before
+24 Oct 2026 read `manifest.json` (serial 11 that day). The first `manifest-windows.json`
+was published at serial 1 and the Dell refused it: "this manifest's serial (1) is OLDER than
+the highest already accepted (11) — refusing a replay". The script now floors a per-OS
+document's first serial above the macOS one (`SERIAL=$((MAC_SERIAL + 1))`); the serial-1
+documents were superseded the same hour.
+
 **Why the Windows rows are php.net's and not a mirror:** the archive directory never drops
 a release, so the pin cannot rot the way Apache Lounge's and FrankenPHP's did; the
 7.4/8.0/8.1 security backports (shivammathur's builds, `php-windows.yml`) are SAME-VERSION
