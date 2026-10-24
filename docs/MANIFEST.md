@@ -281,6 +281,32 @@ It is the **third family** in this document, the Adminer shape with three differ
 `arch: "any"`, one row per version, for Adminer's reason. By hand:
 `./scripts/publish-manifest.sh phpmyadmin:5.2.4`.
 
+## 2.4 One document per OS — Linux and Windows (24 Oct 2026)
+
+`manifest.json` is macOS's and FROZEN (§3's guard: no `os` key, the Mac arch spellings).
+Since rexenv PR #5 (23 Oct 2026) an unmarked `php`/`php-fpm` row is a Mac's to every rexenv,
+so a Windows or Linux rexenv reading that document gets NO PHP offers — those users got a
+PHP patch only when an app release moved the pin. The ruling of 13 Sep 2026 (one document per
+OS, same schema and key) is now built on both sides (rexenv `docs/PLAN-per-os-php-manifests.md`):
+
+| Document | Who reads it | PHP rows | File rows |
+|---|---|---|---|
+| `manifest.json` | macOS (`updates::manifest_urls_on("macos")`) | our macOS tarballs, unmarked (frozen) | Adminer, phpMyAdmin, php-licenses |
+| `manifest-linux.json` | Linux | our `php-8x-linux-N` tarballs (cli + fpm + licences, `arm64`/`x86_64`), each php/php-fpm row `"os":"linux"` | the same, unmarked |
+| `manifest-windows.json` | Windows | php.net's NTS x64 zips from `downloads.php.net/~windows/releases/archives/` (the archive keeps every release), ONE `php` row per arch (`arm64` and `x86_64` name the same zip — Windows on ARM runs x64), `"os":"windows"`; no php-fpm (the pool is php-cgi inside the zip), no licences (not ours) | the same, unmarked |
+
+Each document has its OWN serial, carry-forward check and guard (`manifest-guard.py
+--document linux|windows`: php rows marked, file rows unmarked, no php-fpm on Windows, the
+arch spellings rexenv asks for). The workflow's `document` dropdown picks one; discovery is
+OS-neutral (php.net's newest patch per minor), so publish all three after a new patch — Linux
+says "BUILD IT FIRST" until `php-8x-linux-N` carries it (`LINUX_RELEASE_TAG_FOR`), Windows
+needs no build (php.net's zip, hashed here, pinned by digest).
+
+**Why the Windows rows are php.net's and not a mirror:** the archive directory never drops
+a release, so the pin cannot rot the way Apache Lounge's and FrankenPHP's did; the
+7.4/8.0/8.1 security backports (shivammathur's builds, `php-windows.yml`) are SAME-VERSION
+rebuilds and move by rexenv's pin, which a manifest cannot do.
+
 ## 3. The four limits the app enforces — respect them or entries are dropped
 
 rexenv drops any entry that breaks these, silently and per-entry (one bad row must

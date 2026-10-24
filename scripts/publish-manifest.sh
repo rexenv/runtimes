@@ -4,6 +4,8 @@
 #   ./scripts/publish-manifest.sh                 discover everything and publish
 #   ./scripts/publish-manifest.sh --dry-run       discover and sign, publish nothing
 #   ./scripts/publish-manifest.sh 8.3.32 8.4.24   only these, no discovery
+#   ./scripts/publish-manifest.sh --document linux          the LINUX document (manifest-linux.json)
+#   ./scripts/publish-manifest.sh --document windows        the WINDOWS document (manifest-windows.json)
 #   ./scripts/publish-manifest.sh --discover      print what is new, touch nothing
 #
 # `--discover` is the read-only half, for the daily cron: it probes upstream,
@@ -148,6 +150,30 @@ RELEASE_TAG_FOR() {
   esac
 }
 
+# The LINUX release holding each version (mirrors `php_linux_tag` in rexenv's
+# core/binaries.rs): `php-8x-linux-1` (23 Oct 2026) carries 8.1.34, 8.2.35, 8.3.36,
+# 8.4.27 and 8.5.12; `php-8x-linux-2` (24 Oct 2026) 8.0.30. A version with no row is
+# "BUILD IT FIRST" for the Linux document, exactly as the macOS table above.
+LINUX_RELEASE_TAG_FOR() {
+  case "$1" in
+    8.0.30) echo "php-8x-linux-2" ;;
+    8.1.34|8.2.35|8.3.36|8.4.27|8.5.12) echo "php-8x-linux-1" ;;
+    *) echo "" ;;
+  esac
+}
+# php.net's Windows zips (the WINDOWS document): NTS x64, the toolset per minor as
+# rexenv's `php_windows_toolset` has it, from the ARCHIVE directory, which keeps every
+# release (the current directory drops a patch once it is superseded — a pin there rots).
+# Not ours, so no licences row; php-cgi lives in the same zip, so ONE `php` row per arch.
+PHPNET_WIN_BASE="https://downloads.php.net/~windows/releases/archives"
+WINDOWS_TOOLSET_FOR() {
+  case "$1" in
+    7.*) echo "vc15" ;;
+    8.0.*|8.1.*|8.2.*|8.3.*) echo "vs16" ;;
+    *) echo "vs17" ;;
+  esac
+}
+
 # ── The minors rexenv ships, and the patch each one PINS ──────────────────────
 #
 # This list must match `PHP_VERSIONS` in rexenv's `core/binaries.rs`. It is
@@ -205,6 +231,17 @@ PINS=(
 
 DRY=0
 DISCOVER=0
+# ── Which OS's document (rexenv docs/PLAN-per-os-php-manifests.md) ───────────
+#
+# One signed document PER OS, same schema, same key, its OWN serial: `manifest.json`
+# is macOS's and FROZEN (every shipped Mac keeps rows it does not understand, so a
+# Linux tarball row in it would be resolved by Macs that cannot run it — the 13 Sep
+# 2026 ruling, manifest-guard.py). `manifest-linux.json` carries our Linux builds
+# (`php-8x-linux-N`), `manifest-windows.json` php.net's NTS zips from the archive
+# directory; both carry the Adminer/phpMyAdmin rows too, because each rexenv reads
+# ONE document. Every PHP row in a per-OS document is marked `"os"`; the file rows
+# are not (rexenv admits an unmarked file row everywhere).
+DOC="macos"
 EXPLICIT=()
 ADMINER_EXPLICIT=()
 PHPMYADMIN_EXPLICIT=()
@@ -212,6 +249,8 @@ for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --discover) DISCOVER=1 ;;
+    --document=*) DOC="${a#--document=}" ;;
+    --document) DOC="__next__" ;;
     --check-pins)
       printf '%s\n' "${PINS[@]}"
       echo "adminer:$ADMINER_PIN (ceiling: major <= $ADMINER_MAX_MAJOR)"
@@ -225,9 +264,12 @@ for a in "$@"; do
     # PHP one, and guessing wrong publishes an entry every app drops.
     adminer:*) ADMINER_EXPLICIT+=("${a#adminer:}") ;;
     phpmyadmin:*) PHPMYADMIN_EXPLICIT+=("${a#phpmyadmin:}") ;;
-    *) EXPLICIT+=("$a") ;;
+    *) if [ "$DOC" = "__next__" ]; then DOC="$a"; else EXPLICIT+=("$a"); fi ;;
   esac
 done
+case "$DOC" in macos|linux|windows) ;; *) echo "--document takes macos, linux or windows (got '$DOC')" >&2; exit 2 ;; esac
+case "$DOC" in macos) DOC_FILE="manifest.json" ;; *) DOC_FILE="manifest-$DOC.json" ;; esac
+echo "document: $DOC ($DOC_FILE)" >&2
 
 command -v openssl >/dev/null || { echo "openssl required" >&2; exit 1; }
 command -v gh >/dev/null || { echo "gh required" >&2; exit 1; }
@@ -294,20 +336,20 @@ PUBLISHED_PHPMYADMIN=""
 # Read through the API, never `raw.githubusercontent.com`: raw is CDN-cached for
 # minutes, so right after a publish it serves the OLD document — and the serial
 # read from it would then REPEAT a serial, which every installed app refuses.
-if ! gh api "repos/$REPO/contents/manifest.json" --jq '.sha' >/dev/null 2>&1; then
+if ! gh api "repos/$REPO/contents/$DOC_FILE" --jq '.sha' >/dev/null 2>&1; then
   FIRST_RUN=1
-  echo "no manifest.json on the branch yet — this is the first publish" >&2
+  echo "no $DOC_FILE on the branch yet — this is the first publish of the $DOC document" >&2
 else
-  gh api "repos/$REPO/contents/manifest.json" --jq '.content' 2>/dev/null | base64 -d \
+  gh api "repos/$REPO/contents/$DOC_FILE" --jq '.content' 2>/dev/null | base64 -d \
     > "$WORK/manifest.json" || {
-    echo "manifest.json EXISTS on the branch but could not be read." >&2
+    echo "$DOC_FILE EXISTS on the branch but could not be read." >&2
     echo "Refusing: publishing now would reset the serial, and every installed" >&2
     echo "rexenv would reject the result as a replay — permanently. Retry." >&2
     exit 1
   }
   CUR="$(sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$WORK/manifest.json" | head -1)"
   [ -n "$CUR" ] || {
-    echo "the published manifest.json has no readable \"serial\" — refusing for the" >&2
+    echo "the published $DOC_FILE has no readable \"serial\" — refusing for the" >&2
     echo "same reason as above (see docs/MANIFEST.md §3)." >&2
     exit 1
   }
@@ -609,61 +651,119 @@ for V in ${VERSIONS[@]:+"${VERSIONS[@]}"}; do
   # Ours or nothing (see "Whose bytes this document points at"). A patch upstream
   # has published and we have not built yet is skipped — loudly, so the operator
   # knows the answer is "build it first" rather than "nothing to do".
-  TAG="$(RELEASE_TAG_FOR "$V")"
-  if [ -z "$TAG" ]; then
-    echo "  → $V has no rexenv build yet — BUILD IT FIRST (Actions → Build PHP 8.x)," >&2
-    echo "     then re-run. Upstream's build has no pdo_pgsql, so offering it would" >&2
-    echo "     take PostgreSQL away from every site on this minor." >&2
-    continue
-  fi
   GROUP=""; ok=1
-  for KIND in cli fpm licenses; do
-    for ARCH in arm64 x86_64; do
-      case "$ARCH" in arm64) U=aarch64 ;; *) U=x86_64 ;; esac
-      case "$KIND" in
-        licenses) URL="$OURS_BASE/$TAG/licenses-php-${V}-${U}.tar.gz" ;;
-        *)        URL="$OURS_BASE/$TAG/php-${V}-${KIND}-macos-${U}.tar.gz" ;;
-      esac
-      OUT="$WORK/${V}-${KIND}-${ARCH}"
-      printf '  %s %s %s … ' "$V" "$KIND" "$ARCH"
-      if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
-        echo "MISSING"; ok=0; break 2
-      fi
-      SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
-      echo "$SHA"
-      case "$KIND" in
-        fpm)      NAME=php-fpm ;;
-        licenses) NAME=php-licenses ;;
-        *)        NAME=php ;;
-      esac
-      # The macOS floor the Mach-O DECLARES, read from the bytes just hashed —
-      # `minMacos` in the entry. rexenv resolves a pin set per host tier since
-      # 23 Sep 2026 (its docs/PLAN-macos-13-floor.md §6.5): a macOS 13 or 14 host
-      # is offered only an entry whose floor it meets, and an entry with NONE is
-      # a build nobody measured, so it is never offered to a legacy host at all.
-      # Licences are text and carry no floor. Read with `macho_floor` (above);
-      # refuse to publish a Mach-O whose floor cannot be read rather than guess one.
-      FLOOR=""
-      if [ "$KIND" != licenses ]; then
-        X="$WORK/x-${V}-${KIND}-${ARCH}"; mkdir -p "$X"
-        MEMBER=php; [ "$KIND" = fpm ] && MEMBER=php-fpm
-        tar -xzf "$OUT" -C "$X" "$MEMBER" 2>/dev/null || { echo "  → $V $KIND $ARCH: no $MEMBER member" >&2; ok=0; break 2; }
-        FLOOR="$(macho_floor "$X/$MEMBER")"
-        if [ -z "$FLOOR" ]; then
-          echo "  → $V $KIND $ARCH: cannot read a macOS floor off the binary — not publishing a guess" >&2
-          ok=0; break 2
+  case "$DOC" in
+  linux)
+    TAG="$(LINUX_RELEASE_TAG_FOR "$V")"
+    if [ -z "$TAG" ]; then
+      echo "  → $V has no rexenv LINUX build yet — BUILD IT FIRST (Actions → Build PHP 8.x, Linux)," >&2
+      echo "     then re-run with --document linux." >&2
+      continue
+    fi
+    for KIND in cli fpm licenses; do
+      for ARCH in arm64 x86_64; do
+        case "$ARCH" in arm64) U=aarch64 ;; *) U=x86_64 ;; esac
+        case "$KIND" in
+          licenses) URL="$OURS_BASE/$TAG/licenses-php-${V}-linux-${U}.tar.gz" ;;
+          *)        URL="$OURS_BASE/$TAG/php-${V}-${KIND}-linux-${U}.tar.gz" ;;
+        esac
+        OUT="$WORK/${V}-${KIND}-${ARCH}"
+        printf '  %s %s %s (linux) … ' "$V" "$KIND" "$ARCH"
+        if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then echo "MISSING"; ok=0; break 2; fi
+        SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"; echo "$SHA"
+        case "$KIND" in fpm) NAME=php-fpm ;; licenses) NAME=php-licenses ;; *) NAME=php ;; esac
+        if [ "$KIND" != licenses ]; then
+          MEMBER=php; [ "$KIND" = fpm ] && MEMBER=php-fpm
+          tar -tzf "$OUT" | grep -qx "$MEMBER" || { echo "  → $V $KIND $ARCH: no $MEMBER member" >&2; ok=0; break 2; }
+          GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","os":"linux","url":"%s","sha256":"%s"}' "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
+        else
+          # Licences are a file row: unmarked, admitted on every OS, told apart by the URL.
+          GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
         fi
-        echo "     minos $FLOOR"
-      fi
-      if [ -n "$FLOOR" ]; then
-        GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s","minMacos":"%s"}' \
-          "$NAME" "$V" "$ARCH" "$URL" "$SHA" "$FLOOR")"
-      else
-        GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' \
-          "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
-      fi
+      done
     done
-  done
+    ;;
+  windows)
+    URL="$PHPNET_WIN_BASE/php-${V}-nts-Win32-$(WINDOWS_TOOLSET_FOR "$V")-x64.zip"
+    OUT="$WORK/${V}-win.zip"
+    printf '  %s php x64 (windows, php.net) … ' "$V"
+    if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
+      echo "MISSING"
+      echo "  → php.net has no $(basename "$URL") in its archive (yet) — dropped." >&2
+      ok=0
+    else
+      SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"; echo "$SHA"
+      python3 - "$OUT" <<'PY' || { echo "  → $V: php.exe / php-cgi.exe missing from the zip" >&2; ok=0; }
+import sys, zipfile
+names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+sys.exit(0 if {"php.exe", "php-cgi.exe"} <= names else 1)
+PY
+      if [ "$ok" -eq 1 ]; then
+        # x64 for EVERY arch: Windows on ARM runs x64 under emulation and php.net publishes
+        # no arm64 build — rexenv's own Windows pins say the same (one zip, both `Arch`es).
+        for ARCH in arm64 x86_64; do
+          GROUP="${GROUP:+$GROUP,}$(printf '{"name":"php","version":"%s","arch":"%s","os":"windows","url":"%s","sha256":"%s"}' "$V" "$ARCH" "$URL" "$SHA")"
+        done
+      fi
+    fi
+    ;;
+  *)
+    TAG="$(RELEASE_TAG_FOR "$V")"
+    if [ -z "$TAG" ]; then
+      echo "  → $V has no rexenv build yet — BUILD IT FIRST (Actions → Build PHP 8.x)," >&2
+      echo "     then re-run. Upstream's build has no pdo_pgsql, so offering it would" >&2
+      echo "     take PostgreSQL away from every site on this minor." >&2
+      continue
+    fi
+    for KIND in cli fpm licenses; do
+      for ARCH in arm64 x86_64; do
+        case "$ARCH" in arm64) U=aarch64 ;; *) U=x86_64 ;; esac
+        case "$KIND" in
+          licenses) URL="$OURS_BASE/$TAG/licenses-php-${V}-${U}.tar.gz" ;;
+          *)        URL="$OURS_BASE/$TAG/php-${V}-${KIND}-macos-${U}.tar.gz" ;;
+        esac
+        OUT="$WORK/${V}-${KIND}-${ARCH}"
+        printf '  %s %s %s … ' "$V" "$KIND" "$ARCH"
+        if ! curl -fsSL --retry 3 -o "$OUT" "$URL"; then
+          echo "MISSING"; ok=0; break 2
+        fi
+        SHA="$(shasum -a 256 "$OUT" | awk '{print $1}')"
+        echo "$SHA"
+        case "$KIND" in
+          fpm)      NAME=php-fpm ;;
+          licenses) NAME=php-licenses ;;
+          *)        NAME=php ;;
+        esac
+        # The macOS floor the Mach-O DECLARES, read from the bytes just hashed —
+        # `minMacos` in the entry. rexenv resolves a pin set per host tier since
+        # 23 Sep 2026 (its docs/PLAN-macos-13-floor.md §6.5): a macOS 13 or 14 host
+        # is offered only an entry whose floor it meets, and an entry with NONE is
+        # a build nobody measured, so it is never offered to a legacy host at all.
+        # Licences are text and carry no floor. Read with `macho_floor` (above);
+        # refuse to publish a Mach-O whose floor cannot be read rather than guess one.
+        FLOOR=""
+        if [ "$KIND" != licenses ]; then
+          X="$WORK/x-${V}-${KIND}-${ARCH}"; mkdir -p "$X"
+          MEMBER=php; [ "$KIND" = fpm ] && MEMBER=php-fpm
+          tar -xzf "$OUT" -C "$X" "$MEMBER" 2>/dev/null || { echo "  → $V $KIND $ARCH: no $MEMBER member" >&2; ok=0; break 2; }
+          FLOOR="$(macho_floor "$X/$MEMBER")"
+          if [ -z "$FLOOR" ]; then
+            echo "  → $V $KIND $ARCH: cannot read a macOS floor off the binary — not publishing a guess" >&2
+            ok=0; break 2
+          fi
+          echo "     minos $FLOOR"
+        fi
+        if [ -n "$FLOOR" ]; then
+          GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s","minMacos":"%s"}' \
+            "$NAME" "$V" "$ARCH" "$URL" "$SHA" "$FLOOR")"
+        else
+          GROUP="${GROUP:+$GROUP,}$(printf '{"name":"%s","version":"%s","arch":"%s","url":"%s","sha256":"%s"}' \
+            "$NAME" "$V" "$ARCH" "$URL" "$SHA")"
+        fi
+      done
+    done
+    ;;
+  esac
   if [ "$ok" -eq 1 ]; then
     ENTRIES="${ENTRIES:+$ENTRIES,}$GROUP"; KEPT+=("$V")
   else
@@ -758,7 +858,7 @@ done
 OUT_DIR="."
 [ "$DRY" -eq 1 ] && OUT_DIR="${MANIFEST_DRY_OUT:-$WORK/out}" && mkdir -p "$OUT_DIR"
 printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' \
-  "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > "$OUT_DIR/manifest.json"
+  "$SERIAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MIN_APP" "$ENTRIES" > "$OUT_DIR/$DOC_FILE"
 
 # ── The document carries only what its FILE says it carries ──────────────────
 #
@@ -770,8 +870,8 @@ printf '{"serial":%d,"generatedAt":"%s","minAppVersion":"%s","artifacts":[%s]}' 
 # this script writes no `os` today, and that is exactly the kind of fact a guard exists to
 # keep true when the per-OS documents arrive. `scripts/manifest-guard.py --self-test` proves
 # the guard against the shapes it refuses.
-python3 scripts/manifest-guard.py --document macos "$OUT_DIR/manifest.json" \
-  || { echo "refusing to sign: the document is not a macOS document (see above)" >&2; exit 1; }
+python3 scripts/manifest-guard.py --document "$DOC" "$OUT_DIR/$DOC_FILE" \
+  || { echo "refusing to sign: the document is not a $DOC document (see above)" >&2; exit 1; }
 
 # ── Nothing the published document carries may DISAPPEAR ──────────────────────
 #
@@ -792,7 +892,7 @@ if [ "$FIRST_RUN" -eq 0 ]; then
   while IFS= read -r triple; do
     [ -n "$triple" ] || continue
     n="${triple%%|*}"; rest="${triple#*|}"; v="${rest%%|*}"; a="${rest##*|}"
-    grep -q "\"name\":\"$n\",\"version\":\"$v\",\"arch\":\"$a\"" "$OUT_DIR/manifest.json" \
+    grep -q "\"name\":\"$n\",\"version\":\"$v\",\"arch\":\"$a\"" "$OUT_DIR/$DOC_FILE" \
       || missing="${missing}  $n $v ($a)"$'\n'
   done < <(tr '{' '\n' < "$WORK/manifest.json" \
     | sed -n 's/.*"name":"\([^"]*\)","version":"\([^"]*\)","arch":"\([^"]*\)".*/\1|\2|\3/p')
@@ -813,14 +913,14 @@ fi
 # ── Sign, then verify OUR OWN signature ───────────────────────────────────────
 # A signature nobody checked is a release nobody can install, and the failure
 # lands on a user as "the manifest signature does not verify".
-openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$OUT_DIR/manifest.json" -out "$WORK/sig.bin"
-xxd -p -c 256 < "$WORK/sig.bin" | tr -d '\n' > "$OUT_DIR/manifest.json.sig"
+openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$OUT_DIR/$DOC_FILE" -out "$WORK/sig.bin"
+xxd -p -c 256 < "$WORK/sig.bin" | tr -d '\n' > "$OUT_DIR/$DOC_FILE.sig"
 openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in "$KEY" -pubout) \
-  -rawin -in "$OUT_DIR/manifest.json" -sigfile "$WORK/sig.bin" >/dev/null \
+  -rawin -in "$OUT_DIR/$DOC_FILE" -sigfile "$WORK/sig.bin" >/dev/null \
   || { echo "our own signature does not verify — refusing to publish" >&2; exit 1; }
 
 echo
-echo "serial $CUR → $SERIAL   versions: ${KEPT[*]}   entries: $(( $(grep -o '"name"' "$OUT_DIR/manifest.json" | wc -l) ))"
+echo "$DOC_FILE: serial $CUR → $SERIAL   versions: ${KEPT[*]}   entries: $(( $(grep -o '"name"' "$OUT_DIR/$DOC_FILE" | wc -l) ))"
 echo "signed with public key $PUB (matches the key shipped builds pin)"
 
 if [ "$DRY" -eq 1 ]; then
@@ -849,12 +949,12 @@ put() {
   sha="$(gh api "repos/$REPO/contents/$path" --jq '.sha' 2>/dev/null || true)"
   [ -n "$sha" ] && sha_arg=(-f "sha=$sha")
   gh api -X PUT "repos/$REPO/contents/$path" \
-    -f "message=publish manifest serial $SERIAL" \
+    -f "message=publish $DOC_FILE serial $SERIAL" \
     -f "content=$(base64 < "$body" | tr -d '\n')" \
     "${sha_arg[@]}" --jq '.commit.sha' >/dev/null
 }
-put manifest.json "$OUT_DIR/manifest.json"
-put manifest.json.sig "$OUT_DIR/manifest.json.sig"
+put "$DOC_FILE" "$OUT_DIR/$DOC_FILE"
+put "$DOC_FILE.sig" "$OUT_DIR/$DOC_FILE.sig"
 echo
 echo "Published. Verify what a user's app will see (raw is CDN-cached ~5 min):"
-echo "  curl -sL https://raw.githubusercontent.com/$REPO/main/manifest.json | head -c 200"
+echo "  curl -sL https://raw.githubusercontent.com/$REPO/main/$DOC_FILE | head -c 200"
