@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           unzip -q "out/$ZIP" -d fp
           ./fp/frankenphp.exe version | tr -d '\r' | tee v.out
-          grep -q "FrankenPHP v$FP_VERSION " v.out || { echo "::error::not FrankenPHP $FP_VERSION"; exit 1; }
+          grep -q "FrankenPHP $FP_VERSION PHP $PHP_EMBEDDED" v.out || { echo "::error::not FrankenPHP $FP_VERSION with PHP $PHP_EMBEDDED"; exit 1; }
           ./fp/frankenphp.exe php-cli -r 'echo PHP_VERSION;' | tr -d '\r' | tee php.out; echo
           [ "$(cat php.out)" = "$PHP_EMBEDDED" ] || { echo "::error::embedded PHP is $(cat php.out), the pin says $PHP_EMBEDDED"; exit 1; }
           # The SMTP ini keys FrankenPHP's Windows site config sets (rexenv's mail catch there).
