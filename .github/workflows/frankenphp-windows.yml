@@ -68,7 +68,7 @@ jobs:
           mkdir -p work/lic/licenses
           curl -fsSL -o work/lic/licenses/LICENSE-frankenphp "https://raw.githubusercontent.com/php/frankenphp/v$FP_VERSION/LICENSE"
           curl -fsSL -o work/lic/licenses/LICENSE-caddy "https://raw.githubusercontent.com/caddyserver/caddy/$CADDY_TAG/LICENSE"
-          grep -q "MIT License" work/lic/licenses/LICENSE-frankenphp || { echo "::error::FrankenPHP's LICENSE is not the MIT text"; exit 1; }
+          grep -q "Permission is hereby granted, free of charge" work/lic/licenses/LICENSE-frankenphp || { echo "::error::FrankenPHP's LICENSE is not the MIT text"; exit 1; }
           grep -q "Apache License" work/lic/licenses/LICENSE-caddy || { echo "::error::Caddy's LICENSE is not Apache-2.0"; exit 1; }
           cp work/fp/license.txt work/lic/licenses/LICENSE-php.txt
           cp work/fp/readme-redist-bins.txt work/lic/licenses/readme-redist-bins.txt
