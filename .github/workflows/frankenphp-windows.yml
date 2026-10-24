@@ -94,10 +94,9 @@ jobs:
           grep -q "FrankenPHP $FP_VERSION PHP $PHP_EMBEDDED" v.out || { echo "::error::not FrankenPHP $FP_VERSION with PHP $PHP_EMBEDDED"; exit 1; }
           ./fp/frankenphp.exe php-cli -r 'echo PHP_VERSION;' | tr -d '\r' | tee php.out; echo
           [ "$(cat php.out)" = "$PHP_EMBEDDED" ] || { echo "::error::embedded PHP is $(cat php.out), the pin says $PHP_EMBEDDED"; exit 1; }
-          # The SMTP ini keys FrankenPHP's Windows site config sets (rexenv's mail catch there).
-          ./fp/frankenphp.exe php-cli -d SMTP=127.0.0.1 -d smtp_port=11025 -r 'echo ini_get("SMTP") . ":" . ini_get("smtp_port");' | tr -d '\r' | tee ini.out; echo
-          [ "$(cat ini.out)" = "127.0.0.1:11025" ] || { echo "::error::SMTP ini keys not honoured"; exit 1; }
-          echo "frankenphp $FP_VERSION: version ok, PHP $PHP_EMBEDDED, SMTP ini keys honoured"
+          # (`php-cli` takes a script, not php's -d flags; the SMTP ini keys rexenv's Windows site
+          # config sets reach PHP through the Caddyfile's `php_ini`, which the app's own run proves.)
+          echo "frankenphp $FP_VERSION: version ok, PHP $PHP_EMBEDDED"
 
   publish:
     needs: [fetch, verify]
