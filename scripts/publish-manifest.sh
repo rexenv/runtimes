@@ -381,11 +381,14 @@ SERIAL=$((CUR + 1))
 # the day the Windows document was first published ("serial (1) is OLDER than the highest
 # already accepted (11)"). Starting above the macOS serial costs nothing and makes the
 # first per-OS document the one those installs accept.
-if [ "$DOC" != macos ] && [ "$FIRST_RUN" -eq 1 ]; then
+# Not only on the first run: the serial-1 documents of 24 Oct 2026 were published before
+# this rule existed, so a per-OS document BELOW the macOS serial is lifted above it whenever
+# it is republished (monotonic for every reader either way).
+if [ "$DOC" != macos ]; then
   MAC_SERIAL="$(gh api "repos/$REPO/contents/manifest.json" --jq '.content' 2>/dev/null | base64 -d \
     | sed -n 's/.*"serial"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' | head -1)"
   if [ -n "$MAC_SERIAL" ] && [ "$SERIAL" -le "$MAC_SERIAL" ]; then
-    echo "first $DOC document: serial $SERIAL → $((MAC_SERIAL + 1)) (above the macOS document's $MAC_SERIAL, which every pre-24-Oct-2026 install remembers)" >&2
+    echo "$DOC document: serial $SERIAL → $((MAC_SERIAL + 1)) (above the macOS document's $MAC_SERIAL, which every pre-24-Oct-2026 install remembers)" >&2
     SERIAL=$((MAC_SERIAL + 1))
   fi
 fi
