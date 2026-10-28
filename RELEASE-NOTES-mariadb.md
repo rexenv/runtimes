@@ -69,7 +69,7 @@ gh attestation verify mariadb-12.3.3-linux-aarch64.tar.gz --repo rexenv/runtimes
 
 | | |
 |---|---|
-| Tag | `mariadb-linux-<n>` (both versions in one release), filled in at publish |
+| Tag | `mariadb-linux-1` (both versions in one release) |
 | Archive layout | exactly the paths above, at the archive root. No layout difference from macOS |
 | Linking | glibc + libcrypt.so.1 dynamic, everything else static. No RPATH |
 | Versions | **12.3.3 / 11.4.13**, where macOS has 12.3.2 / 11.4.12 |
@@ -84,15 +84,15 @@ Sources, each checked against its project's published digest before the build:
 | `https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz` | `c08ae2388ef333e8403e670ad70c0a11f1eed021fd88308d7e02f596fcd9dc16` |
 | `https://github.com/fmtlib/fmt/releases/download/12.2.0/fmt-12.2.0.zip` | `a2f4a8d51178f954e4c339007f77edd76ba0cb2e36f87a48e5a5403d9be5878f` |
 
-Assets of this release (filled in from the publishing run's `SHA256SUMS`):
+Assets of this release (from the publishing run's `SHA256SUMS`):
 
 | Asset | SHA-256 |
 |---|---|
-| `mariadb-12.3.3-linux-x86_64.tar.gz` | _publish run_ |
-| `mariadb-12.3.3-linux-aarch64.tar.gz` | _publish run_ |
-| `mariadb-11.4.13-linux-x86_64.tar.gz` | _publish run_ |
-| `mariadb-11.4.13-linux-aarch64.tar.gz` | _publish run_ |
-| `licenses-mariadb-12.3.3-linux-x86_64.tar.gz` | _publish run_ |
-| `licenses-mariadb-12.3.3-linux-aarch64.tar.gz` | _publish run_ |
-| `licenses-mariadb-11.4.13-linux-x86_64.tar.gz` | _publish run_ |
-| `licenses-mariadb-11.4.13-linux-aarch64.tar.gz` | _publish run_ |
+| `mariadb-12.3.3-linux-x86_64.tar.gz` | `80a9db203f7f3b0bc832f2406131d24349c5b306a1494f1dda43c0b07f94a914` |
+| `mariadb-12.3.3-linux-aarch64.tar.gz` | `53225bc3194afafcef32e9d7ec49d2a8760a2fcf1962733cd8bba47beb2efe87` |
+| `mariadb-11.4.13-linux-x86_64.tar.gz` | `eaf2e201ffb0182f7b795b7b3e483642142c1ccefbecb8b9dfd4233a913505ff` |
+| `mariadb-11.4.13-linux-aarch64.tar.gz` | `470f8a7eab033e4977de6419277076217cc1ce3802114b9718c6ceb432e818dd` |
+| `licenses-mariadb-12.3.3-linux-x86_64.tar.gz` | `0d0983a948c592abb050b47b079dd093fa07498e59dd7867bec61b0355fd2a08` |
+| `licenses-mariadb-12.3.3-linux-aarch64.tar.gz` | `8e51b6eca42f16d7ee64936c744b5eb9fbad098690f2f6936ef3c55303ffc2ee` |
+| `licenses-mariadb-11.4.13-linux-x86_64.tar.gz` | `e1333a1b5a529e8a3b5de96639808f6aee7ca980767d112e6503b14ecb22a5bb` |
+| `licenses-mariadb-11.4.13-linux-aarch64.tar.gz` | `d2f7bad3a9a0b97019ffc231d04c5773b3fc6258e46815552d1ece3f343da92f` |

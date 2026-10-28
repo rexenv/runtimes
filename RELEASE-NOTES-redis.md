@@ -45,7 +45,7 @@ gh attestation verify redis-8.8.4-linux-aarch64.tar.gz --repo rexenv/runtimes
 
 | | |
 |---|---|
-| Tag | `redis-linux-<n>`, filled in at publish |
+| Tag | `redis-linux-1` |
 | Archive layout | `bin/redis-server`, `bin/redis-cli` at the archive root (`core/redis.rs` paths, no Layout change) |
 | Linking | glibc-dynamic (floor 2.35), everything else static. No RPATH |
 | TLS | off, by decision (above) |
@@ -56,11 +56,11 @@ Sources, each checked against its project's published digest before the build:
 |---|---|
 | `https://download.redis.io/releases/redis-8.8.4.tar.gz` (digest: github.com/redis/redis-hashes) | `ac03312b88534905e35c1791266ae48c0664cea10aa4111a6d05627aad0dc9d2` |
 
-Assets of this release (filled in from the publishing run's `SHA256SUMS`):
+Assets of this release (from the publishing run's `SHA256SUMS`):
 
 | Asset | SHA-256 |
 |---|---|
-| `redis-8.8.4-linux-x86_64.tar.gz` | _publish run_ |
-| `redis-8.8.4-linux-aarch64.tar.gz` | _publish run_ |
-| `licenses-redis-8.8.4-linux-x86_64.tar.gz` | _publish run_ |
-| `licenses-redis-8.8.4-linux-aarch64.tar.gz` | _publish run_ |
+| `redis-8.8.4-linux-x86_64.tar.gz` | `fd06eeff42afd0f70b73f5a545fd7e530ed276a9dde0c24e365cefeb8052c054` |
+| `redis-8.8.4-linux-aarch64.tar.gz` | `210a39842bab1fb6a36573ae3312fc44cf779dd7b83f27335b1676d098bccadd` |
+| `licenses-redis-8.8.4-linux-x86_64.tar.gz` | `524e4b1c2c3ec7a218d7bc93e335acb3fb89d1df8961f6d0c7e6ff91b1cdbf14` |
+| `licenses-redis-8.8.4-linux-aarch64.tar.gz` | `28a90cd5c52890361146ef14b87879ddebf48b1691f844fdb1f46349b018255e` |
