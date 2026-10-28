@@ -1,0 +1,185 @@
+name: Build MariaDB (Linux)
+
+# Publishing is manual only, like every build here: these artifacts get pinned by
+# hash in rexenv's source, so a release nobody asked for is a hazard.
+#
+# WHY rexenv builds its own Linux MariaDB: the macOS one is a Homebrew bottle, and
+# Homebrew's Linux bottles are x86_64-only, so rexenv's Linux catalog had none
+# (D-L8 in rexenv's docs/PLAN-linux-port.md; asked for in rexenv/rexenv#7).
+# scripts/build-mariadb.sh carries the decisions (server, client and dump only;
+# static OpenSSL 3.6 for server and clients; bundled zlib/PCRE2/libfmt/readline;
+# static libstdc++).
+#
+# BOTH offered versions build in one run and publish as ONE release, the way
+# php-8x carries every minor: rexenv pins one tag for the engine.
+#
+# Each lane runs scripts/linux-build.sh — the SAME command the laptop runs: build
+# in ubuntu:22.04, then gate in a clean ubuntu:22.04 and 24.04 (no network, no
+# packages, unprivileged). Prove it locally first; CI adds the x86_64 half, the
+# attestation and the release.
+on:
+  # A pull request that touches the recipe builds both arches and runs every gate
+  # — and cannot publish: the publish job needs `inputs.publish`, which only a
+  # manual dispatch sets.
+  pull_request:
+    paths:
+      - .github/workflows/mariadb-linux.yml
+      - scripts/build-mariadb.sh
+      - scripts/gate-mariadb.sh
+      - scripts/linux-build.sh
+      - scripts/linux-common.sh
+      - scripts/gate-common.sh
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+# The versions live here AND in the matrix below (the Collect step checks every
+# one of them arrived); their source digests live in scripts/build-mariadb.sh,
+# which refuses a version it has no digest for. 12.3 is rexenv's default, 11.4 the
+# LTS many hosts run.
+env:
+  MARIADB_VERSIONS: "12.3.3 11.4.13"
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24.04 runners, but the BUILD runs in an ubuntu:22.04 container: the
+        # glibc a binary links against is the floor it demands (rexenv D-L4).
+        # Keep in step with env.MARIADB_VERSIONS.
+        version: ["12.3.3", "11.4.13"]
+        arch: [x86_64, aarch64]
+        include:
+          - { arch: x86_64,  runner: ubuntu-24.04     }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build + gate (build in 22.04; gate in clean 22.04 and 24.04)
+        run: bash scripts/linux-build.sh mariadb "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "${{ matrix.version }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mariadb-${{ matrix.version }}-linux-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-${{ matrix.version }}-linux-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { path: staged }
+
+      # Copied from nginx.yml, where each step carries the story of why it exists.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check it by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="mariadb-linux-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Assert no release asset can be replaced in place
+        run: |
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            exit 1
+          fi
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/mariadb-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/mariadb-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/mariadb-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Per-target artifacts and their licence archives: never deduped.
+          find staged -type f \( -name 'mariadb-*-linux-*.tar.gz' -o -name 'licenses-mariadb-*-linux-*.tar.gz' \) -exec cp {} out/ \;
+          # GPL-2.0: the corresponding source rides the binaries — each version's
+          # tarball, the PCRE2 and libfmt bundles its cmake would have fetched, and
+          # the scripts that drove it. Lanes fetched the same bytes; -n keeps one.
+          find staged -type f \( -name 'mariadb-*.tar.gz' ! -name '*-linux-*' -o -name 'pcre2-*.tar.gz' -o -name 'fmt-*.zip' \
+                                 -o -name 'openssl-*.tar.gz' \) -exec cp -n {} out/ \;
+          cd out
+          for v in $MARIADB_VERSIONS; do
+            for a in x86_64 aarch64; do
+              [ -f "mariadb-$v-linux-$a.tar.gz" ] || { echo "::error::mariadb-$v-linux-$a.tar.gz missing — a lane failed; nothing is published"; exit 1; }
+              [ -f "licenses-mariadb-$v-linux-$a.tar.gz" ] || { echo "::error::licence archive for $v $a missing"; exit 1; }
+            done
+            [ -f "mariadb-$v.tar.gz" ] || { echo "::error::source mirror for $v missing"; exit 1; }
+            [ -f "mariadb-$v-rexenv-build.tar.gz" ] || { echo "::error::build-script archive for $v missing"; exit 1; }
+          done
+          ls pcre2-*.tar.gz fmt-*.zip openssl-*.tar.gz >/dev/null || { echo "::error::pcre2/fmt/openssl source mirrors missing"; exit 1; }
+          shasum -a 256 *.tar.gz *.zip | tee SHA256SUMS
+          for f in *.tar.gz *.zip; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          # A BLOCK scalar: multiple subjects are newline-separated (nginx.yml's
+          # first publish learned that the hard way).
+          subject-path: |
+            out/mariadb-*-linux-x86_64.tar.gz
+            out/mariadb-*-linux-aarch64.tar.gz
+            out/licenses-mariadb-*-linux-x86_64.tar.gz
+            out/licenses-mariadb-*-linux-aarch64.tar.gz
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "MariaDB ${MARIADB_VERSIONS// / + } for Linux (build ${{ inputs.build_number }})" \
+            --notes-file RELEASE-NOTES-mariadb.md
