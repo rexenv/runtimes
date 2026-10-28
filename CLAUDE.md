@@ -176,6 +176,8 @@ existed to replace.
 | `scripts/build-php.sh` | 8.x builds — the gates above live here |
 | `scripts/build-php74.sh` | 7.4, patched source, its own rules |
 | `scripts/build-nginx.sh` | nginx (upstream's darwin builds moved to a macOS 26 floor) |
+| `scripts/linux-build.sh` | Linux Redis / MariaDB / httpd: build in `ubuntu:22.04`, gate in clean 22.04 + 24.04 — same command locally and in CI |
+| `scripts/build-{redis,mariadb,httpd}.sh` | the three Linux builds (run inside the build container); `gate-*.sh` start the real server |
 | `scripts/publish-manifest.sh` | the signed PHP/Adminer update manifest |
 | `scripts/publish-app-manifest.sh` | the signed app update descriptor |
 | `docs/bulk-modules-<minor>.txt` | per-minor module reference, GENERATED from a shipped upstream artifact — never typed |

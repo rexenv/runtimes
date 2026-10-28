@@ -23,3 +23,6 @@ manifest.json.sig
 fetched.json
 app-manifest.json.tmp
 *.sig.tmp
+
+# Linux builds: the verified-source cache scripts/linux-build.sh mounts at /cache
+/.cache/
