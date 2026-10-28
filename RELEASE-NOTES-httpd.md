@@ -55,7 +55,7 @@ gh attestation verify httpd-2.4.69-linux-aarch64.tar.gz --repo rexenv/runtimes
 
 | | |
 |---|---|
-| Tag | `httpd-linux-<n>`, filled in at publish |
+| Tag | `httpd-linux-1` |
 | Archive layout | `bin/httpd`, `lib/httpd/modules/mod_*.so` (10), `lib/libapr-1.so.0`, `lib/libaprutil-1.so.0`, `.bottle/etc/httpd/mime.types`. Bottle layout, **no Layout change** |
 | Linking | glibc + libcrypt.so.1 dynamic; apr/apr-util bundled via `$ORIGIN` RUNPATH; PCRE2 + expat static |
 | Version | **2.4.69** (macOS pins 2.4.68), so `httpd_version_on("linux")` must answer 2.4.69 as Windows does |
@@ -70,11 +70,11 @@ Sources, each checked against its project's published digest before the build:
 | `https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.gz` | `c08ae2388ef333e8403e670ad70c0a11f1eed021fd88308d7e02f596fcd9dc16` |
 | `https://github.com/libexpat/libexpat/releases/download/R_2_9_0/expat-2.9.0.tar.gz` | `16afbb9cefead2aa278105cf27d9f597bde7fbf3dbb85015857ca7ca6a4e89ba` |
 
-Assets of this release (filled in from the publishing run's `SHA256SUMS`):
+Assets of this release (from the publishing run's `SHA256SUMS`):
 
 | Asset | SHA-256 |
 |---|---|
-| `httpd-2.4.69-linux-x86_64.tar.gz` | _publish run_ |
-| `httpd-2.4.69-linux-aarch64.tar.gz` | _publish run_ |
-| `licenses-httpd-2.4.69-linux-x86_64.tar.gz` | _publish run_ |
-| `licenses-httpd-2.4.69-linux-aarch64.tar.gz` | _publish run_ |
+| `httpd-2.4.69-linux-x86_64.tar.gz` | `8685d20e8f2b26500d87ebcdc8eb22dcf4b3ec77d5954538d1a490b2192a3d05` |
+| `httpd-2.4.69-linux-aarch64.tar.gz` | `1f8126f0cce64593931c6bfbe26c3125395c483adf5e0dd437e8b8fed1619581` |
+| `licenses-httpd-2.4.69-linux-x86_64.tar.gz` | `66917b52a7f6abde9090579eed6354f3a7d94eeea7d34560ae1cbaf75e867381` |
+| `licenses-httpd-2.4.69-linux-aarch64.tar.gz` | `280669439742fe1276f52ae6b01be5164ec6642b17d9d2f711659e175546547c` |
