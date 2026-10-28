@@ -1,0 +1,177 @@
+name: Build Apache httpd (Linux)
+
+# Publishing is manual only, like every build here: these artifacts get pinned by
+# hash in rexenv's source, so a release nobody asked for is a hazard.
+#
+# WHY rexenv builds its own Linux httpd: the macOS one is a Homebrew bottle, and
+# Homebrew's Linux bottles are x86_64-only, so rexenv's Linux catalog had none
+# (D-L8 in rexenv's docs/PLAN-linux-port.md; asked for in rexenv/rexenv#7 for
+# `.htaccess`). scripts/build-httpd.sh carries the decisions (the ten modules,
+# the bottle layout, apr via $ORIGIN, no TLS/HTTP2/brotli).
+#
+# The httpd gate needs a real php-fpm behind mod_proxy_fcgi; linux-build.sh
+# fetches our own static one (release php-8x-linux-1) by pinned digest.
+#
+# Each lane runs scripts/linux-build.sh — the SAME command the laptop runs: build
+# in ubuntu:22.04, then gate in a clean ubuntu:22.04 and 24.04 (no network, no
+# packages, unprivileged). Prove it locally first; CI adds the x86_64 half, the
+# attestation and the release.
+on:
+  # A pull request that touches the recipe builds both arches and runs every gate
+  # — and cannot publish: the publish job needs `inputs.publish`, which only a
+  # manual dispatch sets.
+  pull_request:
+    paths:
+      - .github/workflows/httpd-linux.yml
+      - scripts/build-httpd.sh
+      - scripts/gate-httpd.sh
+      - scripts/linux-build.sh
+      - scripts/linux-common.sh
+      - scripts/gate-common.sh
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+
+# The version lives HERE; its source digest lives in scripts/build-httpd.sh, which
+# refuses a version it has no digest for — so the two cannot silently disagree.
+env:
+  HTTPD_VERSION: "2.4.69"
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 24.04 runners, but the BUILD runs in an ubuntu:22.04 container: the
+          # glibc a binary links against is the floor it demands (rexenv D-L4).
+          - { runner: ubuntu-24.04,     arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build + gate (build in 22.04; gate in clean 22.04 and 24.04)
+        run: bash scripts/linux-build.sh httpd "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out" "$HTTPD_VERSION"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: httpd-${{ env.HTTPD_VERSION }}-linux-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-linux-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { path: staged }
+
+      # Copied from nginx.yml, where each step carries the story of why it exists.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check it by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="httpd-linux-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Assert no release asset can be replaced in place
+        run: |
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            exit 1
+          fi
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/httpd-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/httpd-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/httpd-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          V="$HTTPD_VERSION"
+          mkdir -p out
+          # Per-arch artifacts and their licence archives: never deduped.
+          find staged -type f \( -name "httpd-$V-linux-*.tar.gz" -o -name "licenses-httpd-$V-linux-*.tar.gz" \) -exec cp {} out/ \;
+          # Source mirrors and the build-script archive: both lanes fetched the same
+          # verified bytes; -n keeps one.
+          find staged -type f \( -name "httpd-$V.tar.bz2" -o -name 'apr-*.tar.bz2' -o -name 'pcre2-*.tar.gz' \
+                                 -o -name 'expat-*.tar.gz' -o -name "httpd-$V-rexenv-build.tar.gz" \) -exec cp -n {} out/ \;
+          cd out
+          for a in x86_64 aarch64; do
+            [ -f "httpd-$V-linux-$a.tar.gz" ] || { echo "::error::httpd-$V-linux-$a.tar.gz missing — a lane failed; nothing is published"; exit 1; }
+            [ -f "licenses-httpd-$V-linux-$a.tar.gz" ] || { echo "::error::licence archive for $a missing"; exit 1; }
+          done
+          [ -f "httpd-$V.tar.bz2" ] || { echo "::error::httpd source mirror missing"; exit 1; }
+          [ "$(ls apr-1.*.tar.bz2 apr-util-*.tar.bz2 pcre2-*.tar.gz expat-*.tar.gz | wc -l)" = 4 ] \
+            || { echo "::error::expected 4 dependency source mirrors (apr, apr-util, pcre2, expat)"; exit 1; }
+          shasum -a 256 *.tar.gz *.tar.bz2 | tee SHA256SUMS
+          for f in *.tar.gz *.tar.bz2; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          # A BLOCK scalar: multiple subjects are newline-separated (nginx.yml's
+          # first publish learned that the hard way).
+          subject-path: |
+            out/httpd-${{ env.HTTPD_VERSION }}-linux-x86_64.tar.gz
+            out/httpd-${{ env.HTTPD_VERSION }}-linux-aarch64.tar.gz
+            out/licenses-httpd-${{ env.HTTPD_VERSION }}-linux-x86_64.tar.gz
+            out/licenses-httpd-${{ env.HTTPD_VERSION }}-linux-aarch64.tar.gz
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "Apache httpd $HTTPD_VERSION for Linux (build ${{ inputs.build_number }})" \
+            --notes-file RELEASE-NOTES-httpd.md
