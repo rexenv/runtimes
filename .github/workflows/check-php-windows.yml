@@ -1,0 +1,108 @@
+name: Check Windows PHP backport bytes
+
+# rexenv pins Windows PHP 7.4.33 / 8.0.30 / 8.1.34 at the PUBLISHER,
+# shivammathur/php-builder-windows (see `php-windows.yml` for why, and
+# rexenv's src-tauri/src/core/binaries.rs `php_windows_backport_tag`). Those
+# assets are REPLACED IN PLACE under the same name. When that happens, every
+# rexenv install fails those three minors with a checksum error, and until this
+# workflow existed nobody heard about it before a user did: the 25 Oct 2026
+# rebuild was found on 5 Nov, creating a 7.4 site on a test machine.
+#
+# Every day this downloads the three zips and compares their sha256 with:
+#   1. the SET in php-windows.yml (what the mirror gates and records), and
+#   2. rexenv's pins on its default branch (what users actually download).
+# Any mismatch opens (or updates) ONE issue labelled `php-windows-bytes`. It
+# changes nothing and holds no secret: re-pinning is a rexenv change plus a
+# release, and re-mirroring is `php-windows.yml` with the next build number.
+on:
+  schedule:
+    # 06:41 UTC, off the hour (scheduled runs pile up at :00). GitHub disables
+    # schedules after 60 days with no repo activity; if this goes quiet, check it.
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: check-php-windows
+  cancel-in-progress: true
+
+env:
+  SRC: https://github.com/shivammathur/php-builder-windows/releases/download
+  APP_PINS: https://raw.githubusercontent.com/rexenv/rexenv/master/src-tauri/src/core/binaries.rs
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compare live bytes with both pins
+        id: cmp
+        run: |
+          set -euo pipefail
+          # The SET block of php-windows.yml: "version tag toolset dll sha256" rows.
+          SET="$(awk '/^  SET: \|/{on=1; next} on && /^    [0-9]/{print; next} on{exit}' .github/workflows/php-windows.yml)"
+          N="$(grep -c . <<< "$SET" || true)"
+          [ "$N" = 3 ] || { echo "::error::read $N rows from php-windows.yml's SET, expected 3 — the parser no longer matches the file"; exit 1; }
+          curl -fsSL -o app.rs "$APP_PINS"
+          # A pin is a 64-hex literal after the version's match arm; if the app file
+          # moves or changes shape, failing here is better than a silent green.
+          # Only the body of `php_windows_sha256`: other OSes pin the same version
+          # strings elsewhere in the file.
+          awk '/^fn php_windows_sha256\(/{on=1} on{print} on && /^}/{exit}' app.rs > win.rs
+          [ -s win.rs ] || { echo "::error::rexenv's binaries.rs no longer has fn php_windows_sha256 — repoint APP_PINS"; exit 1; }
+
+          : > report.md
+          while read -r V TAG TS DLL SUM; do
+            Z="php-${V}-nts-Win32-${TS}-x64.zip"
+            LIVE="$(curl -fsSL "$SRC/$TAG/$Z" | sha256sum | cut -d' ' -f1)"
+            APP="$(grep -oE "\"${V//./\\.}\" => Some\(\"[0-9a-f]{64}\"\)" win.rs | grep -oE '[0-9a-f]{64}' | head -1 || true)"
+            [ -n "$APP" ] || { echo "::error::no Windows pin for ${V} found in rexenv's binaries.rs"; exit 1; }
+            echo "${V}: live=${LIVE} mirror=${SUM} app=${APP}"
+            if [ "$LIVE" != "$APP" ] || [ "$LIVE" != "$SUM" ]; then
+              {
+                echo "- \`${Z}\` (\`${TAG}\`)"
+                echo "  - publisher now serves: \`${LIVE}\`"
+                echo "  - rexenv pins: \`${APP}\`$([ "$LIVE" = "$APP" ] && echo ' (matches)' || echo ' — **users fail this download**')"
+                echo "  - php-windows.yml SET: \`${SUM}\`$([ "$LIVE" = "$SUM" ] && echo ' (matches)' || echo ' (mirror out of date)')"
+              } >> report.md
+            fi
+          done <<< "$SET"
+          if [ -s report.md ]; then echo "drift=yes" >> "$GITHUB_OUTPUT"; else echo "drift=no" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Tell a human
+        if: steps.cmp.outputs.drift == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          LABEL=php-windows-bytes
+          gh label create "$LABEL" --repo "$REPO" --color D93F0B \
+            --description "The publisher's Windows PHP 7.4/8.0/8.1 bytes no longer match a pin" \
+            >/dev/null 2>&1 || true
+          # Same drift as last time -> stay quiet (one issue, not one a day).
+          MARKER="<!-- drift: $(sha256sum report.md | cut -c1-16) -->"
+          BODY="$(printf '%s\n%s\n\n%s\n\n%s\n' "$MARKER" \
+            "shivammathur/php-builder-windows replaced a Windows PHP backport zip in place. Checked by \`.github/workflows/check-php-windows.yml\`:" \
+            "$(cat report.md)" \
+            "Before re-pinning, re-measure the new bytes the way php-windows.yml does (the DLL exports \`zend_mm_safe_error_ex\`; \`php -m\` equals php.net's; memory exhaustion exits 1 without shutdown functions). Then re-pin in rexenv (\`php_windows_sha256\` in src-tauri/src/core/binaries.rs) and ship a release; update SET here and run php-windows.yml with the NEXT build number. Close this issue when both pins match again.")"
+          NUM="$(gh issue list --repo "$REPO" --label "$LABEL" --state open -L 1 --json number -q '.[0].number // empty')"
+          if [ -n "$NUM" ]; then
+            if gh issue view "$NUM" --repo "$REPO" --json body -q .body | grep -qF "$MARKER"; then
+              echo "issue #$NUM already says exactly this — staying quiet."; exit 0
+            fi
+            gh issue edit "$NUM" --repo "$REPO" --body "$BODY"
+            gh issue comment "$NUM" --repo "$REPO" --body "The drift changed; the issue body is the current state."
+          else
+            gh issue create --repo "$REPO" --label "$LABEL" \
+              --title "Windows PHP 7.4/8.0/8.1 bytes changed at the publisher" --body "$BODY"
+          fi
+
+      - name: No drift
+        if: steps.cmp.outputs.drift == 'no'
+        run: echo "The publisher's three zips match both rexenv's pins and php-windows.yml's SET."

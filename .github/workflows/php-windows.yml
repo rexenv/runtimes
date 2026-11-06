@@ -12,9 +12,16 @@ name: Mirror Windows PHP 7.4/8.0/8.1 (security backports)
 # 21 Oct 2026 from that source.
 #
 # Mirrored rather than pinned at the source because those assets are REPLACED IN
-# PLACE under the same name (all three were, on 21 Oct) — a pin there turns
-# into a checksum failure on the user's machine the next time they rebuild. A
-# release here is immutable, attested, and gated:
+# PLACE under the same name (all three were, on 21 Oct, and again on 25 Oct) — a
+# pin there turns into a checksum failure on the user's machine the next time they
+# rebuild. A release here is immutable, attested, and gated:
+#
+# Build 1 (php-windows-legacy-1) mirrored the 21 Oct bytes. The publisher rebuilt
+# all three on 25 Oct (no backport commit after 19 Oct), rexenv 0.9.5's pins
+# stopped matching, and rexenv re-pinned to the 25 Oct bytes on 5 Nov 2026
+# (src-tauri/src/core/binaries.rs). Build 2 mirrors those. `check-php-windows.yml`
+# compares the publisher's live bytes with SET below and with rexenv's pins every
+# day, so the next in-place rebuild is an issue here, not a user's failed install.
 #
 #   1. each zip is the bytes chosen (sha256 pinned below);
 #   2. its PHP DLL EXPORTS `zend_mm_safe_error_ex` — the ZEND_API function the
@@ -46,11 +53,11 @@ permissions:
 env:
   SRC: https://github.com/shivammathur/php-builder-windows/releases/download
   PHPNET: https://downloads.php.net/~windows/releases/archives
-  # version  builder-tag  toolset  dll   sha256 (nts x64 zip, 21 Oct 2026)  sha256 (src zip)
+  # version  builder-tag  toolset  dll   sha256 (nts x64 zip, 25 Oct 2026 rebuild — rexenv's pins)
   SET: |
-    7.4.33 php7.4 vc15 php7 a6f4a5f868e13e1fff802fe337e72d4483f496fe40a10216e25e28c370ccab24
-    8.0.30 php8.0 vs16 php8 98f4aa8269171842df943258395c3b476d9ac80d2c422397a629bd81845130a6
-    8.1.34 php8.1 vs16 php8 0b57b72712e9bfe680499c1f0c3267ce4ac3ee5f571e7af569c1683dc12819e3
+    7.4.33 php7.4 vc15 php7 b57eb4c0b9280a28edab196784509770729c7cc068046a6d26311a74f3b5162b
+    8.0.30 php8.0 vs16 php8 47b17c933e16775ef43489b9f21d1f592c806c284ecf81057ad3bb4d59e114d9
+    8.1.34 php8.1 vs16 php8 6fcfeb119d026a194241d3d8e809e00a8388e74ac0c791f72d3239dc42bb58a1
   # Files php.net's zip has and these do not. Both are Oracle client bindings that
   # need Oracle's Instant Client DLLs beside them to load at all; php.net's 8.2/8.3
   # zips of 21 Oct 2026 dropped the same two, and rexenv's ini model never enables
@@ -194,4 +201,4 @@ jobs:
           set -euo pipefail
           gh release create "$TAG" out/* \
             --title "PHP 7.4.33 / 8.0.30 / 8.1.34 for Windows x64, security backports (build ${{ inputs.build_number }})" \
-            --notes "Mirror of shivammathur/php-builder-windows' nts x64 builds of 21 Oct 2026, built from shivammathur/php-src-backports (the CVE-2026-109618/109619 fix for these end-of-life minors; php.net publishes no build). Gated in .github/workflows/php-windows.yml: pinned sha256; the PHP DLL exports \`zend_mm_safe_error_ex\`, which php.net's zips of the same versions do not; on Windows, \`php -m\` equals php.net's and memory exhaustion takes the fixed path. Same files as php.net's zips except the Oracle bindings (php_oci8_*.dll, php_pdo_oci.dll), which php.net's own 8.2/8.3 zips also dropped. Sources: \`php-<v>-src.zip\`."
+            --notes "Mirror of shivammathur/php-builder-windows' nts x64 builds of 25 Oct 2026 (rebuilt in place over the 21 Oct builds that php-windows-legacy-1 holds; the bytes rexenv pins since 5 Nov 2026), built from shivammathur/php-src-backports (the CVE-2026-109618/109619 fix for these end-of-life minors; php.net publishes no build). Gated in .github/workflows/php-windows.yml: pinned sha256; the PHP DLL exports \`zend_mm_safe_error_ex\`, which php.net's zips of the same versions do not; on Windows, \`php -m\` equals php.net's and memory exhaustion takes the fixed path. Same files as php.net's zips except the Oracle bindings (php_oci8_*.dll, php_pdo_oci.dll), which php.net's own 8.2/8.3 zips also dropped. Sources: \`php-<v>-src.zip\`."
