@@ -961,18 +961,51 @@ fi
 # deliberately destroyed: git keeps every manifest ever published, so "what was
 # signed, and when" is answerable afterwards. Safe for the same reason the moved
 # tag was: these bytes are trusted for their SIGNATURE, never for their location.
-put() {
-  local path="$1" body="$2" sha_arg=()
-  local sha
-  sha="$(gh api "repos/$REPO/contents/$path" --jq '.sha' 2>/dev/null || true)"
-  [ -n "$sha" ] && sha_arg=(-f "sha=$sha")
-  gh api -X PUT "repos/$REPO/contents/$path" \
-    -f "message=publish $DOC_FILE serial $SERIAL" \
-    -f "content=$(base64 < "$body" | tr -d '\n')" \
-    "${sha_arg[@]}" --jq '.commit.sha' >/dev/null
+#
+# ONE commit carrying BOTH files, through the Git Data API. It used to be two
+# Contents-API PUTs — the document, then its .sig — which is two commits, not
+# one. On 6 Nov 2026 the three documents were published at once: Linux's commits
+# landed between Windows' two, Windows' second PUT got HTTP 409 ("is at … but
+# expected …"), and main was left serving manifest-windows.json at serial 13 next
+# to the serial-12 signature — a document every Windows install refuses. Even
+# without a race, two commits left a window in which document and signature did
+# not match. A commit that holds both cannot.
+#
+# The ref update is a fast-forward (force=false). If another document's publish
+# moved the branch meanwhile, it is refused, and we rebuild the tree on the NEW
+# head — that keeps the other document's commit — and try again.
+BRANCH="$(gh api "repos/$REPO" --jq '.default_branch')"
+blob() {
+  gh api -X POST "repos/$REPO/git/blobs" -f encoding=base64 \
+    -f "content=$(base64 < "$1" | tr -d '\n')" --jq '.sha'
 }
-put "$DOC_FILE" "$OUT_DIR/$DOC_FILE"
-put "$DOC_FILE.sig" "$OUT_DIR/$DOC_FILE.sig"
+DOC_BLOB="$(blob "$OUT_DIR/$DOC_FILE")"
+SIG_BLOB="$(blob "$OUT_DIR/$DOC_FILE.sig")"
+published=0
+for attempt in 1 2 3 4 5; do
+  head="$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq '.object.sha')"
+  base_tree="$(gh api "repos/$REPO/git/commits/$head" --jq '.tree.sha')"
+  tree="$(jq -n --arg base "$base_tree" --arg doc "$DOC_FILE" --arg db "$DOC_BLOB" \
+      --arg sb "$SIG_BLOB" \
+      '{base_tree: $base, tree: [
+         {path: $doc, mode: "100644", type: "blob", sha: $db},
+         {path: ($doc + ".sig"), mode: "100644", type: "blob", sha: $sb}]}' \
+    | gh api -X POST "repos/$REPO/git/trees" --input - --jq '.sha')"
+  commit="$(jq -n --arg msg "publish $DOC_FILE serial $SERIAL" --arg tree "$tree" \
+      --arg parent "$head" '{message: $msg, tree: $tree, parents: [$parent]}' \
+    | gh api -X POST "repos/$REPO/git/commits" --input - --jq '.sha')"
+  if gh api -X PATCH "repos/$REPO/git/refs/heads/$BRANCH" -f "sha=$commit" -F force=false \
+      --jq '.object.sha' >/dev/null 2>&1; then
+    published=1
+    break
+  fi
+  echo "  $BRANCH moved under us (attempt $attempt); rebuilding on the new head…" >&2
+  sleep $((attempt * 2))
+done
+if [ "$published" -ne 1 ]; then
+  echo "::error::could not fast-forward $BRANCH after 5 attempts; NOTHING was published" >&2
+  exit 1
+fi
 echo
 echo "Published. Verify what a user's app will see (raw is CDN-cached ~5 min):"
 echo "  curl -sL https://raw.githubusercontent.com/$REPO/main/$DOC_FILE | head -c 200"
