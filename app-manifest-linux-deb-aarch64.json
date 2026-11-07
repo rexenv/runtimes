@@ -1,14 +1,14 @@
 {
-  "serial": 13,
-  "generatedAt": "2026-11-06T12:20:00Z",
+  "serial": 14,
+  "generatedAt": "2026-11-07T15:27:08Z",
   "release": {
-    "version": "0.9.6",
-    "url": "https://github.com/rexenv/rexenv/releases/download/v0.9.6/rexenv_0.9.6_arm64.deb",
-    "sha256": "e8e303d43116d8aa83cb74d335f40aeb662ad045b8b2e1fd2d9861ca37ba87a9",
-    "sizeBytes": 17034876,
+    "version": "0.9.7",
+    "url": "https://github.com/rexenv/rexenv/releases/download/v0.9.7/rexenv_0.9.7_arm64.deb",
+    "sha256": "afde50862832d4c3f05d40b2949018a088eee2295a16d2995ffe2dc9974ff8de",
+    "sizeBytes": 17057768,
     "minAppVersion": "",
     "minimumSystemVersion": "",
     "notes": "",
-    "publishedAt": "2026-11-06T12:16:12Z"
+    "publishedAt": "2026-11-07T15:13:26Z"
   }
 }
