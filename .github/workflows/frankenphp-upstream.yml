@@ -1,0 +1,176 @@
+name: Mirror FrankenPHP (upstream's macOS arm64 and Linux binaries)
+
+# Manual only, like every workflow here.
+#
+# Why this exists: upstream REPLACED its v1.13.3 static binaries in place on 26 Oct
+# 2026 — `frankenphp-mac-arm64`, `frankenphp-linux-x86_64` and `frankenphp-linux-aarch64`
+# were rebuilt (from main's workflow, at the same v1.13.3 tag commit ae3d5b94) and
+# re-uploaded under the same names, three days after the release. rexenv pins by digest,
+# so every Apple-silicon Mac and every Linux machine without a cached copy met "checksum
+# mismatch … the upstream file changed" on its first FrankenPHP site (found on the 15.8 VM,
+# 7 Nov 2026). The Windows zip had the same fate on 24 Oct (frankenphp-windows.yml). A
+# release here is immutable, attested, and gated:
+#
+#   1. each binary is the bytes chosen — its sha256 is pinned below AND equals the digest
+#      GitHub's API reports for the upstream asset at mirror time;
+#   2. upstream's own build provenance verifies (`gh attestation verify -R php/frankenphp`),
+#      and the binary's embedded VCS info names the tag commit, unmodified;
+#   3. on a real runner of each OS + arch, `frankenphp version` names the release and the
+#      embedded PHP is the version pinned below;
+#   4. rexenv becomes the DISTRIBUTOR, so the licence texts ride beside each binary:
+#      FrankenPHP's MIT, Caddy's Apache-2.0, PHP's licence, the static-php-cli library set
+#      from this repo's own build of the same release at the same commit
+#      (`frankenphp-1.13.3-1`'s licences — same build-static.sh, same extensions), and on
+#      Linux musl's COPYRIGHT (the binaries are static musl).
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number. NEVER reuse one — a re-mirror is the next number."
+        required: true
+        default: "2"
+      publish:
+        description: "Publish a release. Off = run the gates only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  FP_VERSION: "1.13.3"
+  FP_COMMIT: "ae3d5b949d0963111bd895ffdd730e63c120665c"
+  PHP_EMBEDDED: "8.5.12"
+  CADDY_TAG: "v2.11.7"
+  SHA_MAC_ARM64: "7cffdb2f25e7e6206dba907cdfdd2fabc44876aaec1a2a4783e588f7b953d7b8"
+  SHA_LINUX_X86_64: "f88db9972ddac5e4c097c8b703e585255e181411687e5a1f79ca4b6328526e0b"
+  SHA_LINUX_AARCH64: "73bd5e8b82cb48e52c49ec124f1eba03bfa5608365c770372606ec4846fb929e"
+  SPC_LICENCES_FROM: "frankenphp-1.13.3-1"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download, check digests and provenance, pack the licences
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out work
+          for pair in "mac-arm64:$SHA_MAC_ARM64" "linux-x86_64:$SHA_LINUX_X86_64" "linux-aarch64:$SHA_LINUX_AARCH64"; do
+            a="${pair%%:*}"; sha="${pair#*:}"; f="frankenphp-$a"
+            curl -fsSL -o "out/$f" "https://github.com/php/frankenphp/releases/download/v$FP_VERSION/$f"
+            echo "$sha  out/$f" | sha256sum -c -
+            API="$(gh api "repos/php/frankenphp/releases/tags/v$FP_VERSION" --jq ".assets[] | select(.name==\"$f\") | .digest")"
+            [ "$API" = "sha256:$sha" ] || { echo "::error::GitHub reports $API for $f; the pin is sha256:$sha — upstream replaced it again"; exit 1; }
+            gh attestation verify "out/$f" -R php/frankenphp >/dev/null || { echo "::error::$f carries no valid php/frankenphp provenance"; exit 1; }
+            echo "$f: digest pinned == API, provenance verified"
+          done
+          # The licence set: ours, from the same release built at the same commit.
+          gh release download "$SPC_LICENCES_FROM" -R "${{ github.repository }}" -p "licenses-frankenphp-$FP_VERSION-mac-x86_64.tar.gz" -D work
+          mkdir -p work/base && tar -xzf "work/licenses-frankenphp-$FP_VERSION-mac-x86_64.tar.gz" -C work/base
+          [ -d work/base/licenses ] || { echo "::error::the source licence tarball has no licenses/ dir"; exit 1; }
+          curl -fsSL -o work/base/licenses/LICENSE-frankenphp "https://raw.githubusercontent.com/php/frankenphp/v$FP_VERSION/LICENSE"
+          curl -fsSL -o work/base/licenses/LICENSE-caddy "https://raw.githubusercontent.com/caddyserver/caddy/$CADDY_TAG/LICENSE"
+          grep -q "Permission is hereby granted, free of charge" work/base/licenses/LICENSE-frankenphp
+          grep -q "Apache License" work/base/licenses/LICENSE-caddy
+          for os in mac-arm64 linux-x86_64 linux-aarch64; do
+            rm -rf work/l && cp -R work/base work/l
+            if [ "${os%%-*}" = linux ]; then
+              curl -fsSL -o work/l/licenses/COPYRIGHT-musl "https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT"
+              grep -q "MIT" work/l/licenses/COPYRIGHT-musl || { echo "::error::musl's COPYRIGHT did not download"; exit 1; }
+            fi
+            printf 'FrankenPHP %s for %s — upstream'"'"'s own static build (php/frankenphp release v%s, asset frankenphp-%s, provenance verified), mirrored by rexenv because upstream replaced the asset in place on 26 Oct 2026.\nFrankenPHP: MIT (LICENSE-frankenphp). Caddy %s: Apache-2.0 (LICENSE-caddy). Embedded PHP %s and the static libraries: the static-php-cli licence set of the same release and commit (rexenv/runtimes %s).\n' \
+              "$FP_VERSION" "$os" "$FP_VERSION" "$os" "$CADDY_TAG" "$PHP_EMBEDDED" "$SPC_LICENCES_FROM" > work/l/licenses/README-mirror.txt
+            tar -czf "out/licenses-frankenphp-$FP_VERSION-$os.tar.gz" -C work/l licenses
+            tar -tzf "out/licenses-frankenphp-$FP_VERSION-$os.tar.gz" | grep -qx licenses/LICENSE-frankenphp
+          done
+          ls -lh out
+      - uses: actions/upload-artifact@v7
+        with: { name: frankenphp-upstream, path: out }
+
+  verify:
+    needs: fetch
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, asset: frankenphp-mac-arm64 }
+          - { runner: ubuntu-22.04, asset: frankenphp-linux-x86_64 }
+          - { runner: ubuntu-22.04-arm, asset: frankenphp-linux-aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-upstream, path: out }
+      - name: Run it
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="out/${{ matrix.asset }}"; chmod +x "$f"
+          "$f" version | tee v.out
+          grep -q "FrankenPHP v$FP_VERSION PHP $PHP_EMBEDDED" v.out || { echo "::error::not FrankenPHP v$FP_VERSION with PHP $PHP_EMBEDDED"; exit 1; }
+          "$f" php-cli -r 'echo PHP_VERSION, " ", hash("sha256", "x");' | tee php.out; echo
+          [ "$(cut -d' ' -f1 php.out)" = "$PHP_EMBEDDED" ] || { echo "::error::embedded PHP is not $PHP_EMBEDDED"; exit 1; }
+          # The 1.13.3 fix itself: hash('sha256') ran on every CPU (1.13.2's musl builds died with SIGILL without SHA-NI).
+          [ "$(cut -d' ' -f2 php.out)" = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" ] || { echo "::error::hash('sha256') is wrong"; exit 1; }
+          "$f" build-info | tee bi.out | grep -E 'vcs\.(revision|modified)'
+          grep -q "vcs.revision=$FP_COMMIT" bi.out || { echo "::error::not built from the v$FP_VERSION tag commit"; exit 1; }
+          grep -q "vcs.modified=false" bi.out || { echo "::error::built from a modified tree"; exit 1; }
+          echo "${{ matrix.asset }}: version, PHP, sha256 and VCS ok on ${{ matrix.runner }}"
+
+  publish:
+    needs: [fetch, verify]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { name: frankenphp-upstream, path: out }
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false) echo "::error::immutable releases are OFF — a published pin could be silently replaced."; exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases; check by hand, then set IMMUTABLE_ACK=confirmed."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="frankenphp-$FP_VERSION-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A re-mirror is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Assert the set is complete
+        run: |
+          set -euo pipefail
+          for a in mac-arm64 linux-x86_64 linux-aarch64; do
+            for f in "frankenphp-$a" "licenses-frankenphp-$FP_VERSION-$a.tar.gz"; do
+              [ -f "out/$f" ] || { echo "::error::missing $f — refusing to publish a partial set"; exit 1; }
+            done
+          done
+          cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/frankenphp-*
+            out/*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* --title "FrankenPHP $FP_VERSION — upstream's macOS arm64 and Linux binaries, mirrored (build ${{ inputs.build_number }})" \
+            --notes "Mirror of php/frankenphp v$FP_VERSION's \`frankenphp-mac-arm64\`, \`frankenphp-linux-x86_64\` and \`frankenphp-linux-aarch64\` (upstream's own static builds, PHP $PHP_EMBEDDED, tag commit ${FP_COMMIT:0:8}), kept here because upstream replaced these assets in place on 26 Oct 2026 and rexenv pins by digest. Gated in .github/workflows/frankenphp-upstream.yml: pinned sha256 equal to GitHub's digest for each asset; php/frankenphp build provenance verified; on macos-15, ubuntu-22.04 and ubuntu-22.04-arm, \`frankenphp version\` names $FP_VERSION with PHP $PHP_EMBEDDED, \`hash('sha256')\` is right, and the VCS info names the tag commit, unmodified. Licences per binary: \`licenses-frankenphp-$FP_VERSION-<os>.tar.gz\`."
