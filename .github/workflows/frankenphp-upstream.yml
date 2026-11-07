@@ -85,7 +85,9 @@ jobs:
             printf 'FrankenPHP %s for %s — upstream'"'"'s own static build (php/frankenphp release v%s, asset frankenphp-%s, provenance verified), mirrored by rexenv because upstream replaced the asset in place on 26 Oct 2026.\nFrankenPHP: MIT (LICENSE-frankenphp). Caddy %s: Apache-2.0 (LICENSE-caddy). Embedded PHP %s and the static libraries: the static-php-cli licence set of the same release and commit (rexenv/runtimes %s).\n' \
               "$FP_VERSION" "$os" "$FP_VERSION" "$os" "$CADDY_TAG" "$PHP_EMBEDDED" "$SPC_LICENCES_FROM" > work/l/licenses/README-mirror.txt
             tar -czf "out/licenses-frankenphp-$FP_VERSION-$os.tar.gz" -C work/l licenses
-            tar -tzf "out/licenses-frankenphp-$FP_VERSION-$os.tar.gz" | grep -qx licenses/LICENSE-frankenphp
+            # Listed to a file, then grepped: `tar | grep -q` ends tar with SIGPIPE, and pipefail fails the step (run 42358173945).
+            tar -tzf "out/licenses-frankenphp-$FP_VERSION-$os.tar.gz" > work/list.txt
+            grep -qx licenses/LICENSE-frankenphp work/list.txt
           done
           ls -lh out
       - uses: actions/upload-artifact@v7
