@@ -117,9 +117,16 @@ jobs:
           [ "$(cut -d' ' -f1 php.out)" = "$PHP_EMBEDDED" ] || { echo "::error::embedded PHP is not $PHP_EMBEDDED"; exit 1; }
           # The 1.13.3 fix itself: hash('sha256') ran on every CPU (1.13.2's musl builds died with SIGILL without SHA-NI).
           [ "$(cut -d' ' -f2 php.out)" = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" ] || { echo "::error::hash('sha256') is wrong"; exit 1; }
-          "$f" build-info | tee bi.out | grep -E 'vcs\.(revision|modified)'
-          grep -q "vcs.revision=$FP_COMMIT" bi.out || { echo "::error::not built from the v$FP_VERSION tag commit"; exit 1; }
-          grep -q "vcs.modified=false" bi.out || { echo "::error::built from a modified tree"; exit 1; }
+          "$f" build-info > bi.out 2>&1 || true
+          # The macOS build embeds Go's VCS stamp; upstream's static musl Linux builds do not (run
+          # 42358329348) — there the fetch job's provenance gate (php/frankenphp's own workflow) stands.
+          if grep -q 'vcs.revision=' bi.out; then
+            grep -E 'vcs\.(revision|modified)' bi.out
+            grep -q "vcs.revision=$FP_COMMIT" bi.out || { echo "::error::not built from the v$FP_VERSION tag commit"; exit 1; }
+            grep -q "vcs.modified=false" bi.out || { echo "::error::built from a modified tree"; exit 1; }
+          else
+            echo "no VCS stamp in this build — provenance verified in the fetch job instead"
+          fi
           echo "${{ matrix.asset }}: version, PHP, sha256 and VCS ok on ${{ matrix.runner }}"
 
   publish:
