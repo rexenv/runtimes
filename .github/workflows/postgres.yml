@@ -1,0 +1,204 @@
+name: Build PostgreSQL (rexenv's own macOS build)
+
+# Manual only, like every build here: these artifacts are pinned by hash in
+# rexenv's source, so a build that fires on push would produce releases nobody
+# asked for and tempt someone into re-uploading over a tag.
+#
+# WHY rexenv builds its own PostgreSQL for macOS: theseus-rs/postgresql-binaries
+# declares whatever floor its runner had — `minos 15.0` today, 26.0 in June 2026,
+# and never below 14.0 on arm64 — so macOS 14 is offered one 2024 patch of 16 and
+# macOS 13 no PostgreSQL at all. scripts/build-postgres.sh's header carries the
+# table; rexenv docs/PLAN-macos-13-floor.md §6.6 is the plan this implements.
+#
+# ONE version per run. rexenv pins three (18.x, 17.x, 16.x); each is its own
+# immutable release, so one failing does not hold the other two.
+on:
+  workflow_dispatch:
+    inputs:
+      postgres_version:
+        description: "PostgreSQL version in rexenv's spelling, <major>.<minor>.0 (18.6.0 = postgresql.org's 18.6)."
+        required: true
+        default: "18.6.0"
+      build_number:
+        description: "Build number. NEVER reuse one — a rebuild is the next number, not a re-upload."
+        required: true
+        default: "1"
+      publish:
+        description: "Publish a release. Off = build + run the gates only (use this first)."
+        type: boolean
+        default: false
+      x86_host:
+        description: "Where the x86_64 half builds. rosetta = the arm64 macos-15 runner under `arch -x86_64` (proven locally 16 Nov 2026: all three versions, every gate); intel = macos-15-intel, until GitHub retires it (Aug 2027)."
+        type: choice
+        options: [intel, rosetta]
+        default: rosetta
+
+permissions:
+  contents: write      # create the release
+  id-token: write      # sigstore, for build provenance
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,       arch: aarch64 }
+          - { runner: "${{ inputs.x86_host == 'rosetta' && 'macos-15' || 'macos-15-intel' }}", arch: x86_64, rosetta: "${{ inputs.x86_host == 'rosetta' }}" }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rosetta 2
+        if: matrix.rosetta == 'true'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/uname -m
+
+      # Nothing to install: a C compiler, make, perl, bison and flex ship with the
+      # runner's Xcode, libxml2/libxslt/libedit are the SDK's, and OpenSSL is built
+      # from source by the script. No Homebrew — a bottle's floor is the bottle's
+      # macOS, which is the accident this build exists to end.
+      - name: Build
+        run: |
+          if [ "${{ matrix.rosetta }}" = "true" ]; then
+            arch -x86_64 /bin/bash scripts/build-postgres.sh "${{ inputs.postgres_version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+          else
+            bash scripts/build-postgres.sh "${{ inputs.postgres_version }}" "${{ matrix.arch }}" "$GITHUB_WORKSPACE/out"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: postgresql-${{ inputs.postgres_version }}-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+
+      - name: Keep the failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-${{ matrix.arch }}
+          path: out/
+          retention-days: 7
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with: { path: staged }
+
+      # The immutability contract is a repo SETTING, and a setting nobody checks
+      # is exactly the promise it was meant to replace. Assert it before writing
+      # anything, and refuse to publish if it is off.
+      # Three states, not two. "The API did not tell me" is NOT "it is off" —
+      # reporting the second when the first is true is the same species of
+      # dishonest check this gate exists to prevent. Verified 14 Aug 2026: the
+      # REST repo object does not carry `immutable_releases` for this repo, so
+      # the UNKNOWN branch is the live one until GitHub exposes it.
+      - name: Assert immutable releases are enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STATE="$(gh api repos/${{ github.repository }} -q '.immutable_releases' 2>/dev/null || echo)"
+          case "$STATE" in
+            true)  echo "immutable releases: ON (reported by the API)" ;;
+            false)
+              echo "::error::immutable releases are OFF — a published pin could be silently replaced."
+              echo "::error::Settings → General → Releases → Immutable releases."
+              exit 1 ;;
+            *)
+              echo "::error::the API does not report immutable_releases for this repo, so this gate"
+              echo "::error::cannot confirm the setting. CHECK IT BY HAND before publishing:"
+              echo "::error::  https://github.com/${{ github.repository }}/settings → Releases → Immutable releases"
+              echo "::error::Then re-run with IMMUTABLE_ACK=confirmed set as a repository variable."
+              [ "${{ vars.IMMUTABLE_ACK }}" = "confirmed" ] || exit 1
+              echo "immutable releases: acknowledged by hand (vars.IMMUTABLE_ACK)" ;;
+          esac
+
+      # A tag is never reused. If it exists, this build is asking to overwrite
+      # bytes somebody has already pinned.
+      - name: Assert the tag is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="postgresql-${{ inputs.postgres_version }}-${{ inputs.build_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists. A rebuild is the NEXT build number, never a re-upload."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # The one flag that could quietly undo everything above: it lets a release
+      # asset be replaced in place, which is exactly the property this repo exists
+      # to deny.
+      #
+      # Matches the flag being PASSED TO gh, not the bare word — the first version
+      # grepped for the string and failed on its own step, which is a false
+      # positive but a useful one: it proved the check had never actually run
+      # until the first publish. A guard nobody has seen execute is a guard nobody
+      # knows works.
+      - name: Assert no release asset can be replaced in place
+        run: |
+          # Anchored to the real subcommands, so the guard cannot match its own
+          # prose. Both directions are checked below rather than assumed.
+          PAT="gh +release +(upload|create|edit)\b[^|]*--clobber"
+          # The line below deliberately CONTAINS the hazard, to prove the pattern
+          # still bites. It is excluded by sentinel rather than by a clever
+          # regex, so the exclusion is visible to a reader instead of implied.
+          if grep -rnE "$PAT" .github/ scripts/ | grep -v 'GUARD-PROBE'; then
+            echo "::error::a release command would overwrite an existing asset — forbidden here"
+            echo "::error::a rebuild is the NEXT build number, never a re-upload"
+            exit 1
+          fi
+          # Prove the pattern still bites: a known-bad line must be caught.
+          printf 'gh release upload "$T" out/* --clobber\n' > /tmp/spc-clobber-probe # GUARD-PROBE
+          grep -qE "$PAT" /tmp/spc-clobber-probe \
+            || { echo "::error::the guard no longer detects its own hazard"; exit 1; }
+          rm -f /tmp/spc-clobber-probe
+          echo "no release command overwrites an asset (and the guard is proven live)"
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          V="${{ inputs.postgres_version }}"
+          mkdir -p out
+          # Trees and licence archives are PER ARCH; the two source mirrors are the
+          # same bytes from both jobs (`-n` keeps the first, never overwrites).
+          find staged -type f \( -name "postgresql-$V-macos-*.tar.gz" -o -name "licenses-postgresql-$V-macos-*.tar.gz" \
+            -o -name 'postgresql-*.tar.bz2' -o -name 'openssl-*.tar.gz' \) -exec cp -n {} out/ \;
+          cd out
+          # Both arches of both, or something did not build: a publish missing an
+          # arch is a pin that 404s for half the Macs.
+          for a in aarch64 x86_64; do
+            [ -f "postgresql-$V-macos-$a.tar.gz" ] || { echo "::error::postgresql-$V-macos-$a.tar.gz missing"; exit 1; }
+            [ -f "licenses-postgresql-$V-macos-$a.tar.gz" ] || { echo "::error::licenses-postgresql-$V-macos-$a.tar.gz missing"; exit 1; }
+          done
+          ls postgresql-*.tar.bz2 openssl-*.tar.gz >/dev/null || { echo "::error::a source mirror is missing"; exit 1; }
+          shasum -a 256 *.tar.gz *.tar.bz2 | tee SHA256SUMS
+          for f in *.tar.gz *.tar.bz2; do shasum -a 256 "$f" > "$f.sha256"; done
+          ls -lh
+
+      # The trees are what this repo built; the source mirrors are upstream's bytes.
+      # A BLOCK scalar: subjects are separated by newlines (nginx.yml, build 1).
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            out/postgresql-*-macos-aarch64.tar.gz
+            out/postgresql-*-macos-x86_64.tar.gz
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" out/* \
+            --title "PostgreSQL ${{ inputs.postgres_version }} for macOS (build ${{ inputs.build_number }})" \
+            --notes-file RELEASE-NOTES-postgresql.md
