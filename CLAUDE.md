@@ -178,6 +178,7 @@ existed to replace.
 | `scripts/build-nginx.sh` | nginx (upstream's darwin builds moved to a macOS 26 floor) |
 | `scripts/linux-build.sh` | Linux Redis / MariaDB / httpd: build in `ubuntu:22.04`, gate in clean 22.04 + 24.04 — same command locally and in CI |
 | `scripts/build-{redis,mariadb,httpd}.sh` | the three Linux builds (run inside the build container); `gate-*.sh` start the real server |
+| `scripts/build-postgres.sh` | macOS PostgreSQL at a 13.0 floor, static OpenSSL, parity-gated against theseus-rs's tree of the same version; runs locally in ~1.5 min (arm64), both arches (`arch -x86_64 /bin/bash` for the Intel half) |
 | `scripts/publish-manifest.sh` | the signed PHP/Adminer update manifest |
 | `scripts/publish-app-manifest.sh` | the signed app update descriptor |
 | `docs/bulk-modules-<minor>.txt` | per-minor module reference, GENERATED from a shipped upstream artifact — never typed |
